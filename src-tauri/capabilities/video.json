@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "video",
+  "description": "Barre d'enregistrement video et bulle de camera",
+  "windows": ["video-barre", "video-camera"],
+  "permissions": ["core:default"]
+}

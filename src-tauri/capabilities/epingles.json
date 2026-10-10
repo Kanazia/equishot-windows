@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "epingles",
+  "description": "Fenetres des epingles",
+  "windows": ["epingle-*"],
+  "permissions": ["core:default", "core:window:allow-start-dragging"]
+}

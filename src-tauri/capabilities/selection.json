@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "selection",
+  "description": "Fenetre de selection des captures",
+  "windows": ["capture-selection"],
+  "permissions": ["core:default"]
+}

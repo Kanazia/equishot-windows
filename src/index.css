@@ -1,0 +1,279 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+/* ---------------------------------------------------------------------------
+   Tokens de marque Equinox AI, extraits de assets/brand/design-system.html.
+   Les noms bruts vivent dans :root, le mappage Tailwind est fait plus bas.
+
+   Règle de couleur (épuration C-A, ADR-049) : primaire pour l'action, la
+   sélection et les liens ; tertiaire pour ce qui demande l'attention
+   maintenant ; erreur pour le destructif et les échecs, un destructif courant
+   ne rougissant qu'au survol ; tout le reste en neutre (muted,
+   on-surface-variant). Hors règle : l'accent qui suit le compte (ADR-041) et
+   les couleurs de données (anneaux, marques, échelles de confiance).
+--------------------------------------------------------------------------- */
+:root {
+  --bg: #131315;
+  --surface: #1f1f21;
+  --surface-low: #1b1b1d;
+  --surface-high: #2a2a2c;
+  --surface-highest: #343536;
+
+  --primary: #b9c7e4;
+  --secondary: #acc9f0;
+  --tertiary: #e7bf99;
+  --marque-equimail: #9fd6c2;
+  --primary-container: #0a192f;
+  --secondary-container: #2c4869;
+
+  --on-surface: #e4e2e4;
+  --on-surface-variant: #c5c6cd;
+  --muted: #8f9097;
+  --outline: #44474d;
+  --error: #ffb4ab;
+
+  /* Anneaux de la vue Cerveau. Primaire, secondaire et on-surface-variant se
+     confondaient (écart CIEDE2000 de 4,9 entre Mémoire et Routines) : le
+     secondaire est approfondi, le primaire glisse vers le lilas. Écart
+     minimal mesuré entre deux anneaux : 15,6, et plus de 28 avec le
+     tertiaire, réservé à l'alerte. */
+  --anneau-memoire: var(--primary);
+  --anneau-skills: var(--marque-equimail);
+  --anneau-routines: #6d9fe0;
+  --anneau-applications: #c9a8dc;
+
+  /* Correspondances attendues par les composants shadcn/ui */
+  --background: var(--bg);
+  --foreground: var(--on-surface);
+  --card: var(--surface);
+  --card-foreground: var(--on-surface);
+  --popover: var(--surface-high);
+  --popover-foreground: var(--on-surface);
+  --primary-foreground: var(--primary-container);
+  --secondary-foreground: var(--primary-container);
+  --muted-foreground: var(--muted);
+  --accent: var(--surface-high);
+  --accent-foreground: var(--on-surface);
+  --destructive: var(--error);
+  --border: var(--outline);
+  --input: var(--surface-high);
+  --ring: var(--primary);
+  --radius: 0.5rem;
+
+  --sidebar: var(--surface-low);
+  --sidebar-foreground: var(--on-surface);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-container);
+  --sidebar-accent: var(--surface-high);
+  --sidebar-accent-foreground: var(--on-surface);
+  --sidebar-border: var(--outline);
+  --sidebar-ring: var(--primary);
+
+  --chart-1: var(--primary);
+  --chart-2: var(--secondary);
+  --chart-3: var(--tertiary);
+  --chart-4: var(--on-surface-variant);
+  --chart-5: var(--muted);
+
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-low: var(--surface-low);
+  --color-surface-high: var(--surface-high);
+  --color-surface-highest: var(--surface-highest);
+
+  --color-primary: var(--primary);
+  --color-secondary: var(--secondary);
+  --color-tertiary: var(--tertiary);
+  --color-marque-equimail: var(--marque-equimail);
+  --color-primary-container: var(--primary-container);
+  --color-secondary-container: var(--secondary-container);
+
+  --color-on-surface: var(--on-surface);
+  --color-on-surface-variant: var(--on-surface-variant);
+  --color-muted: var(--muted);
+  --color-outline: var(--outline);
+  --color-error: var(--error);
+
+  --font-display: "Plus Jakarta Sans", "Segoe UI", system-ui, sans-serif;
+  --font-body: "Inter", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Mono", ui-monospace, monospace;
+  --font-sans: var(--font-body);
+  --font-heading: var(--font-display);
+
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+
+  /* Jeton shadcn/ui restants, adosses aux memes variables brutes */
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  html {
+    font-family: var(--font-body);
+  }
+
+  body {
+    @apply bg-bg text-on-surface;
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+  }
+
+  h1,
+  h2,
+  h3 {
+    font-family: var(--font-display);
+    letter-spacing: -0.01em;
+  }
+
+  code,
+  kbd,
+  pre {
+    font-family: var(--font-mono);
+  }
+
+  ::selection {
+    background: var(--secondary-container);
+    color: var(--on-surface);
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Micro-interactions, discipline Emil Kowalski.
+   Une seule propriete animee a la fois, jamais `transition: all`,
+   toutes les durees restent sous 250 ms.
+--------------------------------------------------------------------------- */
+/* Hors @layer, donc prioritaire sur les utilitaires Tailwind :
+   c'est la seule facon de remplacer le `transition-all` de shadcn/ui
+   par une transition d'une seule propriete. */
+button,
+[role="button"],
+a[href],
+[data-pressable] {
+  transition: transform 160ms var(--ease-out);
+}
+
+button:active,
+[role="button"]:active,
+a[href]:active,
+[data-pressable]:active {
+  transform: scale(0.97);
+}
+
+button:disabled:active,
+[role="button"][aria-disabled="true"]:active,
+[data-pressable][aria-disabled="true"]:active {
+  transform: none;
+}
+
+/* Le survol n'existe que pour une vraie souris. */
+@media (hover: hover) and (pointer: fine) {
+  .eq-hover {
+    transition: background-color 140ms var(--ease-out);
+  }
+
+  .eq-hover:hover {
+    background-color: var(--surface-high);
+  }
+}
+
+/* Entree d'une carte de vignette ou d'un retour : courte, depuis presque rien. */
+@keyframes eq-entree {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+}
+
+.eq-entree {
+  animation: eq-entree 200ms var(--ease-out);
+}
+
+/* Un popover s'ouvre depuis son declencheur, jamais depuis le centre. */
+[data-radix-popper-content-wrapper] [data-state="open"] {
+  transform-origin: var(--radix-popper-transform-origin);
+}
+
+/* Ouverture au clavier (Ctrl+K, Ctrl+J) : aucune animation. */
+[data-eq-no-motion],
+[data-eq-no-motion] * {
+  animation: none !important;
+  transition: none !important;
+}
+
+.eq-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: var(--outline) transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  button:active,
+  [role="button"]:active,
+  a[href]:active,
+  [data-pressable]:active {
+    transform: none;
+  }
+}
+
+/* Les fenêtres transparentes (pastille, sélection, vignettes) : la page ne peint pas de fond. */
+html.transparente,
+html.transparente body {
+  background: transparent;
+}

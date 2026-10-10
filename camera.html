@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="fr" data-etat="attente">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>EquiShot, caméra</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: transparent;
+      }
+      #disque {
+        width: 100vw;
+        height: 100vh;
+        border-radius: 50%;
+        clip-path: circle(50%);
+        overflow: hidden;
+        background: #111;
+        cursor: grab;
+        touch-action: none;
+        user-select: none;
+      }
+      #disque:active {
+        cursor: grabbing;
+      }
+      video {
+        display: block;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+      video.miroir {
+        transform: scaleX(-1);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="disque"><video autoplay muted playsinline></video></div>
+    <script type="module" src="/src/camera/main.ts"></script>
+  </body>
+</html>

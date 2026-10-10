@@ -1,0 +1,83 @@
+[package]
+name = "equishot"
+version = "0.21.0"
+description = "EquiShot, compagnon de capture d'ecran d'Equinox AI"
+authors = ["Equinox AI"]
+edition = "2021"
+
+[lib]
+# Le suffixe `_lib` evite le conflit entre le nom de la lib et celui du binaire sous Windows.
+name = "equishot_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "EquiShot"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# Versions verrouillees par le Cargo.lock (Tauri 2.11.5).
+# `tray-icon` : l'icone de la zone de notification ; `protocol-asset` : la
+# galerie lit les PNG du dossier des captures.
+tauri = { version = "2", features = ["tray-icon", "protocol-asset"] }
+tauri-plugin-opener = "2"
+# Confirmation de la suppression d'une capture (`confirmer`).
+tauri-plugin-dialog = "2"
+# Raccourci systeme, pilote en Rust seulement. `~2.3` : la 2.4 exige Tauri 2.12.
+tauri-plugin-global-shortcut = "~2.3"
+# Un second lancement remontre la premiere instance. `~2.4` : la 2.5 exige Tauri 2.12
+# (dependances de la 2.5.2 et de la 2.4.5 lues sur crates.io le 2 octobre 2026).
+tauri-plugin-single-instance = "~2.4"
+# 2.12 : la 2.13 exige Tauri 2.12 (ADR-020).
+tauri-plugin-updater = "~2.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.40", features = ["bundled"] }
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png", "gif"] }
+chrono = "0.4"
+arboard = "3.6"
+# Capture d'un ecran et fenetre au premier plan.
+xcap = "0.9"
+# Glisser une vignette vers une autre application. Le crate et pas le greffon
+# `tauri-plugin-drag` : le chemin glisse se calcule en Rust, jamais dans la page.
+drag = "2.1.1"
+
+[target.'cfg(windows)'.dependencies]
+# Curseur en croix, premier plan rendu : deja dans l'arbre.
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_UI_Shell", "Win32_System_Registry"] }
+# Windows.Media.Ocr (ADR-010). Version deja tiree par Tauri : aucune crate neuve.
+windows = { version = "=0.61.3", features = ["Foundation", "Foundation_Collections", "Globalization", "Graphics_Imaging", "Media_Ocr", "Storage_Streams"] }
+# Le gestionnaire d'autorisation de la camera (ADR-017, 0.18) : wry 0.55.1 n'accorde d'office que
+# le presse-papiers. Version de wry, deja dans le verrou avec windows 0.61.3 : aucune crate neuve.
+webview2-com = "=0.38.2"
+# La video (ADR-016) : Windows.Graphics.Capture et Media Foundation par windows-capture, le son
+# par WASAPI. windows-capture tire windows 0.62.2, deja dans le verrou : ses types Direct3D sont
+# ceux de cette version, d'ou le second nom.
+windows-capture = "=2.0.1"
+wasapi = "=0.25.0"
+windows62 = { package = "windows", version = "=0.62.2", features = [
+    "Graphics_DirectX_Direct3D11",
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+    "Win32_Media_MediaFoundation",
+    "Win32_System_Com",
+    "Win32_System_Performance",
+    "Win32_System_WinRT_Direct3D11",
+] }
+
+# windows-capture avec une methode ajoutee, `send_directx_surface_at` (ADR-016).
+[patch.crates-io]
+windows-capture = { path = "vendor/windows-capture" }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

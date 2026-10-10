@@ -1,0 +1,43 @@
+{
+  "name": "equishot",
+  "private": true,
+  "version": "0.21.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "verify": "tsc --noEmit && vite build && node --experimental-strip-types --test tests/unit/captures-formes.test.mjs tests/unit/captures-orientation.test.mjs tests/unit/captures-frappe.test.mjs tests/unit/video-preparation.test.mjs tests/unit/video-bulle.test.mjs tests/unit/video-scenes.test.mjs tests/unit/captures-defilante.test.mjs tests/unit/publication.test.mjs && cd src-tauri && cargo test",
+    "test:unit": "node --experimental-strip-types --test tests/unit/captures-formes.test.mjs tests/unit/captures-orientation.test.mjs tests/unit/captures-frappe.test.mjs tests/unit/video-preparation.test.mjs tests/unit/video-bulle.test.mjs tests/unit/video-scenes.test.mjs tests/unit/captures-defilante.test.mjs tests/unit/publication.test.mjs",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@fontsource/inter": "^5.3.0",
+    "@fontsource/jetbrains-mono": "^5.3.0",
+    "@fontsource/plus-jakarta-sans": "^5.3.0",
+    "@tailwindcss/vite": "^4.3.3",
+    "@tanstack/react-query": "^5.102.8",
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2.7.3",
+    "class-variance-authority": "^0.7.1",
+    "cn": "^0.2.6",
+    "lucide-react": "^1.42.0",
+    "material-symbols": "^0.47.1",
+    "radix-ui": "^1.6.7",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "shadcn": "^4.21.0",
+    "tailwindcss": "^4.3.3",
+    "tw-animate-css": "^1.4.0",
+    "zustand": "^5.0.15"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "@types/node": "^26.5.0",
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.6",
+    "@vitejs/plugin-react": "^6.0.2",
+    "playwright": "^1.63.0",
+    "typescript": "~6.0.3",
+    "vite": "^8.0.16"
+  }
+}
