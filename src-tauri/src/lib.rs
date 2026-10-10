@@ -160,6 +160,8 @@ pub fn run() {
             captures::captures_copier,
             captures::captures_dossier,
             captures::captures_ouvrir_dossier,
+            captures::captures_montrer,
+            captures::captures_menu,
             captures::captures_choisir_dossier,
             captures::captures_deplacer_dossier,
             demarrage::demarrage_lire,

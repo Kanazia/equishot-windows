@@ -161,6 +161,10 @@ export const capturesCopier = (id: number) => invoke<void>("captures_copier", { 
 
 export const capturesDossier = () => invoke<string>("captures_dossier");
 export const capturesOuvrirDossier = () => invoke<string>("captures_ouvrir_dossier");
+/** L'Explorateur, le fichier de la capture sélectionné (le MP4 d'une vidéo). */
+export const capturesMontrer = (id: number) => invoke<void>("captures_montrer", { id });
+/** Le clic droit sur une carte ou une vignette : le menu natif, sous le curseur. */
+export const capturesMenu = (id: number) => invoke<void>("captures_menu", { id });
 
 /** « Changer… » (ADR-020) : le dossier choisi et le nombre de fichiers qui partiraient, `null` si annulé. */
 export interface Deplacement {

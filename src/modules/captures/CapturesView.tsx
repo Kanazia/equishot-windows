@@ -16,7 +16,8 @@ import {
   capturesLister,
   capturesModifier,
   capturesNoter,
-  capturesOuvrirDossier,
+  capturesMenu,
+  capturesMontrer,
   capturesSupprimer,
   duree,
   epingleOuvrir,
@@ -24,7 +25,6 @@ import {
   isTauri,
   surCapturesChangees,
   videoGif,
-  videoOuvrirDossier,
   type Capture,
 } from "@/lib/captures-api";
 import { confirmer } from "@/lib/tauri";
@@ -280,6 +280,10 @@ export function CapturesView({ onReglages }: { onReglages: () => void }) {
                     cochee && "border-primary ring-2 ring-primary/40",
                   )}
                   onClick={() => (enSelection ? basculer(capture.id) : setOuverte({ capture, edition: false }))}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    capturesMenu(capture.id).catch((err) => setErreurAction(errorText(err)));
+                  }}
                 >
                   <span className="relative">
                     <img
@@ -537,7 +541,7 @@ function Fiche({ initiale, editionInitiale = false, onFermer }: { initiale: Capt
             </Button>
               </>
             )}
-            <Button variant="outline" size="sm" data-testid="capture-dossier" onClick={() => void tenter(video ? videoOuvrirDossier : capturesOuvrirDossier)}>
+            <Button variant="outline" size="sm" data-testid="capture-dossier" onClick={() => void tenter(() => capturesMontrer(capture.id))}>
               <Icon name="folder_open" size={14} />
               Ouvrir le dossier
             </Button>

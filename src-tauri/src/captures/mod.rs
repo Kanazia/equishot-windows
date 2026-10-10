@@ -309,10 +309,14 @@ pub(crate) fn exiger_image(capture: &Capture) -> Result<(), String> {
 }
 
 /// Met un fichier au presse-papiers comme fichier (`CF_HDROP`) : un Ctrl+V
-/// dans une messagerie ou l'Explorateur le depose.
+/// dans une messagerie ou l'Explorateur le depose. Vide d'abord : arboard 3.6
+/// ajoute le fichier sans vider, et l'Explorateur ne voyait que l'ancien contenu.
 pub(crate) fn copier_fichier(chemin: &std::path::Path) -> Result<(), String> {
     arboard::Clipboard::new()
-        .and_then(|mut presse_papiers| presse_papiers.set().file_list(&[chemin]))
+        .and_then(|mut presse_papiers| {
+            presse_papiers.clear()?;
+            presse_papiers.set().file_list(&[chemin])
+        })
         .map_err(|e| format!("Copie du fichier dans le presse-papiers impossible : {e}"))
 }
 
@@ -1793,6 +1797,55 @@ pub async fn captures_dossier(app: tauri::AppHandle) -> Result<String, String> {
     hors_thread_principal(app, |app| Ok(dossier(&app)?.to_string_lossy().into_owned())).await
 }
 
+/// Le fichier que l'Explorateur selectionne : le MP4 d'une video, l'image annotee sinon
+/// (celle que « Copier » met au presse-papiers).
+fn fichier_montre(capture: &Capture) -> &str {
+    match capture.duree_ms {
+        Some(_) => &capture.origine,
+        None => &capture.rendu,
+    }
+}
+
+fn montrer_dans_l_explorateur(app: &tauri::AppHandle, id: i64) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let capture = lire(app, id)?;
+    app.opener()
+        .reveal_item_in_dir(fichier_montre(&capture))
+        .map_err(|e| format!("Ouverture de l'Explorateur impossible : {e}"))
+}
+
+/// « Ouvrir le dossier » de la fiche : l'Explorateur, le fichier selectionne.
+#[tauri::command]
+pub async fn captures_montrer(app: tauri::AppHandle, id: i64) -> Result<(), String> {
+    hors_thread_principal(app, move |app| montrer_dans_l_explorateur(&app, id)).await
+}
+
+/// Prefixe des entrees du menu d'une capture (`capture-menu-<action>@<id>`).
+pub const PREFIXE_MENU: &str = "capture-menu-";
+
+/// Le clic droit sur une carte de la galerie ou une vignette : le menu natif,
+/// sous le curseur. Ses clics passent par le menu de notification, puis `sur_menu`.
+#[tauri::command]
+pub async fn captures_menu(app: tauri::AppHandle, fenetre: tauri::WebviewWindow, id: i64) -> Result<(), String> {
+    use tauri::menu::{Menu, MenuItem};
+    let montrer = MenuItem::with_id(&app, format!("{PREFIXE_MENU}montrer@{id}"), "Afficher dans l'Explorateur", true, None::<&str>)
+        .map_err(|e| e.to_string())?;
+    let menu = Menu::with_items(&app, &[&montrer]).map_err(|e| format!("Menu de la capture impossible : {e}"))?;
+    fenetre.popup_menu(&menu).map_err(|e| format!("Menu de la capture impossible à ouvrir : {e}"))
+}
+
+/// Un clic du menu d'une capture, sur le thread principal : le travail part a cote.
+pub fn sur_menu(app: &tauri::AppHandle, id_menu: &str) {
+    let Some(("montrer", id)) = id_menu.strip_prefix(PREFIXE_MENU).and_then(|reste| reste.split_once('@')) else { return };
+    let Ok(id) = id.parse::<i64>() else { return };
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Err(motif) = montrer_dans_l_explorateur(&app, id) {
+            avertir(&app, &motif);
+        }
+    });
+}
+
 #[tauri::command]
 pub async fn captures_ouvrir_dossier(app: tauri::AppHandle) -> Result<String, String> {
     hors_thread_principal(app, |app| {
@@ -1871,6 +1924,39 @@ pub async fn captures_deplacer_dossier(app: tauri::AppHandle, cible: String) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Essai reel, a la main : `cargo test --lib fichier_seul_au_presse_papiers -- --ignored`.
+    /// Ecrase le presse-papiers. Un texte pose par OLE (comme un navigateur) puis
+    /// la copie d'un fichier : les lecteurs OLE (Explorateur, .NET) ne doivent
+    /// voir que le fichier (vu le 10 octobre 2026 : sans vidage, le texte seul).
+    #[test]
+    fn explorateur_montre_le_mp4_d_une_video_et_le_rendu_d_une_image() {
+        let mut capture = Capture { origine: "a.png".into(), rendu: "a.rendu.png".into(), ..Default::default() };
+        assert_eq!(fichier_montre(&capture), "a.rendu.png");
+        capture.origine = "a.mp4".into();
+        capture.duree_ms = Some(1000);
+        assert_eq!(fichier_montre(&capture), "a.mp4");
+    }
+
+    #[test]
+    #[ignore = "presse-papiers reel"]
+    fn fichier_seul_au_presse_papiers() {
+        let ps = |commande: &str| {
+            let sortie = std::process::Command::new("powershell.exe")
+                .args(["-NoProfile", "-STA", "-Command", commande])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&sortie.stdout).trim().to_string()
+        };
+        let fichier = std::env::temp_dir().join("equishot-essai-presse-papiers.mp4");
+        std::fs::write(&fichier, b"essai").unwrap();
+        ps("Set-Clipboard -Value 'texte avant'");
+        copier_fichier(&fichier).unwrap();
+        let formats = ps("Add-Type -A System.Windows.Forms; [Windows.Forms.Clipboard]::GetDataObject().GetFormats() -join ','");
+        let _ = std::fs::remove_file(&fichier);
+        assert!(formats.split(',').any(|f| f == "FileDrop"), "formats vus : {formats}");
+        assert!(!formats.contains("Text"), "l'ancien texte reste : {formats}");
+    }
 
     #[test]
     fn defilante_facon_lue_des_quatre_chaines() {

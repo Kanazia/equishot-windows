@@ -15,6 +15,7 @@ import { Icon } from "@/components/Icon";
 import {
   adresse,
   capturesCopier,
+  capturesMenu,
   duree,
   capturesSupprimer,
   errorText,
@@ -86,6 +87,10 @@ function Carte({ capture, dessus }: { capture: Capture; dessus: boolean }) {
         onPointerUp={() => {
           if (depart.current && !glisse.current) copier();
           depart.current = null;
+        }}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          capturesMenu(capture.id).catch((err) => setErreur(errorText(err)));
         }}
       >
         <img

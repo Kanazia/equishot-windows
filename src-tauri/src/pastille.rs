@@ -359,6 +359,8 @@ pub fn icone_de_notification(app: &tauri::AppHandle) -> tauri::Result<()> {
                 "maj" => crate::maj::installer_detache(app),
                 // Le menu surgissant d'une epingle (ADR-011) : ses clics arrivent ici, comme ceux du minuteur.
                 autre if autre.starts_with(crate::epingles::PREFIXE) => crate::epingles::sur_menu(app, autre),
+                // Le clic droit sur une carte de la galerie ou une vignette.
+                autre if autre.starts_with(captures::PREFIXE_MENU) => captures::sur_menu(app, autre),
                 autre => {
                     if let Some(id) = crate::video::scenes::id_du_menu(autre) {
                         crate::video::lancer_scene_detache(app, id, devant);
