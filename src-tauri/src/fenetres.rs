@@ -94,16 +94,57 @@ pub fn molette(sens: crate::captures::defilante::Sens, crans: i32) {
 /// n'arrete que le clic (parcours du 4 octobre 2026, `docs/TESTS.md`).
 /// ponytail: tao ne voit pas ce changement de visibilite ; une fenetre montree ici
 /// se montre et se cache toujours ici, jamais par `show()` ni `hide()`.
+///
+/// Montree, elle repasse aussi en tete de la couche « toujours devant » : toutes
+/// les fenetres montrees ici sont `always_on_top`, et `SW_SHOWNOACTIVATE` ne touche
+/// pas a l'ordre. La pile des vignettes de la production en etait sortie (sous la
+/// galerie et 70 fenetres ordinaires, 2026-10-10, cause non trouvee) et chaque
+/// capture la remontrait derriere tout. Mesure du meme jour : `HWND_TOPMOST` sur
+/// une fenetre deja visible rend vrai et ne fait rien ; cachee puis montree, si.
+/// Le cycle ne se fait donc que si une fenetre ordinaire est passee devant elle.
 pub fn montrer_sans_activer<R: tauri::Runtime>(fenetre: &tauri::WebviewWindow<R>, visible: bool) {
     #[cfg(windows)]
     {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindowAsync, SW_HIDE, SW_SHOWNOACTIVATE};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            IsWindowVisible, SetWindowPos, ShowWindowAsync, HWND_TOPMOST, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE,
+            SW_SHOWNOACTIVATE,
+        };
         let Ok(poignee) = fenetre.hwnd() else { return };
-        // SAFETY: poignee d'une fenetre de ce processus ; l'appel se poste a son fil sans l'attendre.
-        unsafe { ShowWindowAsync(poignee.0 as _, if visible { SW_SHOWNOACTIVATE } else { SW_HIDE }) };
+        let poignee = poignee.0 as _;
+        // SAFETY: poignee d'une fenetre de ce processus ; les appels se postent a son fil, dans l'ordre, sans l'attendre.
+        unsafe {
+            if !visible {
+                ShowWindowAsync(poignee, SW_HIDE);
+                return;
+            }
+            if IsWindowVisible(poignee) != 0 && sous_une_ordinaire(poignee) {
+                ShowWindowAsync(poignee, SW_HIDE);
+            }
+            ShowWindowAsync(poignee, SW_SHOWNOACTIVATE);
+            SetWindowPos(poignee, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
+        }
     }
     #[cfg(not(windows))]
     let _ = if visible { fenetre.show() } else { fenetre.hide() };
+}
+
+/// Vrai si une fenetre visible hors de la couche « toujours devant » est au-dessus
+/// de `poignee` : elle est sortie de cette couche, quel que soit son drapeau
+/// `WS_EX_TOPMOST` (pose sur la pile de la production qui en etait sortie).
+#[cfg(windows)]
+fn sous_une_ordinaire(poignee: windows_sys::Win32::Foundation::HWND) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindow, GetWindowLongPtrW, IsWindowVisible, GWL_EXSTYLE, GW_HWNDPREV, WS_EX_TOPMOST};
+    // SAFETY: appels de lecture ; une poignee perimee rend nul ou zero, sans risque.
+    unsafe {
+        let mut dessus = GetWindow(poignee, GW_HWNDPREV);
+        while !dessus.is_null() {
+            if IsWindowVisible(dessus) != 0 && GetWindowLongPtrW(dessus, GWL_EXSTYLE) as u32 & WS_EX_TOPMOST == 0 {
+                return true;
+            }
+            dessus = GetWindow(dessus, GW_HWNDPREV);
+        }
+    }
+    false
 }
 
 /// Alt relache seul sur une fenetre d'EquiShot y active le menu systeme
