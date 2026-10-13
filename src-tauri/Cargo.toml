@@ -1,6 +1,6 @@
 [package]
 name = "equishot"
-version = "0.21.2"
+version = "0.21.3"
 description = "EquiShot, compagnon de capture d'ecran d'Equinox AI"
 authors = ["Equinox AI"]
 edition = "2021"

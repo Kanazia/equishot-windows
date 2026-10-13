@@ -1742,6 +1742,13 @@ pub async fn captures_noter(app: tauri::AppHandle, id: i64, note: String) -> Res
     hors_thread_principal(app, move |app| app.state::<AppState>().with_conn(|conn| stockage::noter(conn, id, &note))).await
 }
 
+/// Le titre que la galerie montre : celui de la fenetre d'origine, ou celui qu'on lui donne.
+#[tauri::command]
+pub async fn captures_renommer(app: tauri::AppHandle, id: i64, titre: String) -> Result<(), String> {
+    let titre = titre.trim().to_string();
+    hors_thread_principal(app, move |app| app.state::<AppState>().with_conn(|conn| stockage::renommer(conn, id, &titre))).await
+}
+
 /// Remplace les formes, l'orientation et le recadrage d'une capture et refait son rendu.
 /// `rendu` absent : plus aucune forme, le rendu redevient l'original oriente, rogne au
 /// recadrage. `orientation` : un entier de 0 a 7, exige (ADR-018). `recadrage` absent ou

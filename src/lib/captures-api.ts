@@ -148,6 +148,8 @@ export const capturesLister = (recherche: string) => invoke<Capture[]>("captures
 
 export const capturesNoter = (id: number, note: string) => invoke<void>("captures_noter", { id, note });
 
+export const capturesRenommer = (id: number, titre: string) => invoke<void>("captures_renommer", { id, titre });
+
 /** `orientation` (ADR-018) : 0 à 7, exigée. `rendu` : le PNG aplati à la taille orientée, absent sans forme. */
 export const capturesModifier = (id: number, formes: Forme[], recadrage: Zone | null, fond: Fond | null, orientation: number, rendu?: string) =>
   invoke<Capture>("captures_modifier", { id, formes, recadrage, fond, orientation, rendu: rendu ?? null });

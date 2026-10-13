@@ -702,6 +702,21 @@ pub fn noter(conn: &Connection, id: i64, note: &str) -> Result<(), String> {
     tx.commit().map_err(|e| format!("Enregistrement de la note impossible : {e}"))
 }
 
+/// Le titre d'une capture, celui de sa fenetre d'origine tant qu'on ne l'a pas change.
+// ponytail: le titre remplace `fenetre`, l'ancien n'est pas garde ; une colonne a part si on veut un jour le retrouver.
+pub fn renommer(conn: &Connection, id: i64, titre: &str) -> Result<(), String> {
+    let tx = conn.unchecked_transaction().map_err(|e| format!("Transaction impossible : {e}"))?;
+    let touchees = tx
+        .execute("UPDATE captures SET fenetre = ?1 WHERE id = ?2", params![titre, id])
+        .map_err(|e| format!("Enregistrement du titre impossible : {e}"))?;
+    if touchees == 0 {
+        return Err(format!("Capture {id} introuvable."));
+    }
+    tx.execute("UPDATE captures_fts SET fenetre = ?1 WHERE rowid = ?2", params![titre, id])
+        .map_err(|e| format!("Indexation du titre impossible : {e}"))?;
+    tx.commit().map_err(|e| format!("Enregistrement du titre impossible : {e}"))
+}
+
 /// Remplace les formes, l'orientation, le recadrage et le fond d'une capture. `quand`
 /// change, et avec lui l'adresse des images dans la page, qui les recharge.
 pub fn remplacer_formes(
@@ -965,6 +980,20 @@ mod tests {
     fn captures_note_d_une_capture_absente_refusee() {
         let conn = crate::db::open_in_memory().expect("base");
         assert!(noter(&conn, 99, "x").is_err());
+    }
+
+    #[test]
+    fn captures_titre_renomme_affiche_et_cherche() {
+        let conn = crate::db::open_in_memory().expect("base");
+        let dossier = Path::new("D:/captures");
+        let premiere = poser(&conn, dossier, 1);
+        let seconde = poser(&conn, dossier, 2);
+        renommer(&conn, seconde.id, "Espaces ouverts").expect("titre");
+        let trouvees = lister(&conn, dossier, "espaces").expect("recherche");
+        assert_eq!(trouvees.iter().map(|c| c.id).collect::<Vec<_>>(), vec![seconde.id]);
+        assert_eq!(trouvees[0].fenetre, "Espaces ouverts");
+        assert_eq!(lister(&conn, dossier, "dupont").expect("ancien titre").iter().map(|c| c.id).collect::<Vec<_>>(), vec![premiere.id]);
+        assert!(renommer(&conn, 99, "x").is_err());
     }
 
     #[test]

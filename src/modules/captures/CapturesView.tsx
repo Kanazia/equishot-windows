@@ -16,6 +16,7 @@ import {
   capturesLister,
   capturesModifier,
   capturesNoter,
+  capturesRenommer,
   capturesMenu,
   capturesMontrer,
   capturesSupprimer,
@@ -385,6 +386,12 @@ function Fiche({ initiale, editionInitiale = false, onFermer }: { initiale: Capt
   const [gifEnCours, setGifEnCours] = useState(false);
   const minuteur = useRef<number | undefined>(undefined);
   const derniere = useRef(capture.note);
+  // Le titre : celui de la fenêtre d'origine, changé sur place. Entrée ou un clic
+  // ailleurs l'enregistre, Échap le remet tel qu'il était.
+  const [titre, setTitre] = useState(capture.fenetre);
+  const titreEnregistre = useRef(capture.fenetre);
+  const saisieTitre = useRef(titre);
+  saisieTitre.current = titre;
 
   const rafraichir = () => void queryClient.invalidateQueries({ queryKey: ["captures"] });
 
@@ -412,6 +419,14 @@ function Fiche({ initiale, editionInitiale = false, onFermer }: { initiale: Capt
     void tenter(() => capturesNoter(capture.id, texte).then(rafraichir), "Note enregistrée");
   }
 
+  function enregistrerTitre() {
+    const propre = saisieTitre.current.trim();
+    setTitre(propre);
+    if (propre === titreEnregistre.current) return;
+    titreEnregistre.current = propre;
+    void tenter(() => capturesRenommer(capture.id, propre).then(rafraichir), "Titre enregistré");
+  }
+
   // Une fiche fermée dans la demi-seconde qui suit la dernière frappe
   // enregistre quand même sa note : rien de tapé ne se perd.
   const saisie = useRef(note);
@@ -430,7 +445,27 @@ function Fiche({ initiale, editionInitiale = false, onFermer }: { initiale: Capt
   return (
     <DialogContent data-testid="capture-fiche" className="flex max-h-[92vh] max-w-5xl flex-col gap-3 sm:max-w-5xl">
       <DialogHeader>
-        <DialogTitle className="truncate pr-8 text-[14px]">{capture.fenetre || "Fenêtre sans titre"}</DialogTitle>
+        <DialogTitle className="pr-8 text-[14px]">
+          <input
+            value={titre}
+            onChange={(evenement) => setTitre(evenement.target.value)}
+            onBlur={enregistrerTitre}
+            onKeyDown={(evenement) => {
+              if (evenement.key === "Enter") {
+                evenement.preventDefault();
+                evenement.currentTarget.blur();
+              } else if (evenement.key === "Escape") {
+                saisieTitre.current = titreEnregistre.current;
+                setTitre(titreEnregistre.current);
+              }
+            }}
+            placeholder="Fenêtre sans titre"
+            aria-label="Titre de la capture"
+            title="Cliquer pour renommer"
+            data-testid="capture-titre"
+            className="-mx-1.5 w-full truncate rounded-md border border-transparent bg-transparent px-1.5 py-0.5 font-medium text-on-surface outline-none transition-colors placeholder:text-muted-foreground hover:border-input focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+          />
+        </DialogTitle>
         <DialogDescription className="text-[11px] text-muted">
           {/* Windows nomme ses écrans `\\.\DISPLAY1` : le préfixe ne dit rien. */}
           {/* La taille du rendu : le cadre (ADR-007) et les marges du fond (ADR-012). */}

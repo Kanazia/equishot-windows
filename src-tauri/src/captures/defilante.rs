@@ -21,28 +21,107 @@ pub fn bande_laterale(largeur: u32) -> u32 {
     (largeur / 20).max(16).min(largeur / 3)
 }
 
-/// L'empreinte de chaque ligne de la vue, sans ses bandes laterales (FNV-1a sur
-/// les octets : rapide meme dans l'exe de debug).
-pub fn empreintes(vue: &RgbaImage) -> Vec<u64> {
-    let (largeur, hauteur) = vue.dimensions();
-    let bande = bande_laterale(largeur) as usize * 4;
-    let ligne = largeur as usize * 4;
-    let octets = vue.as_raw();
-    (0..hauteur as usize)
-        .map(|y| {
-            let debut = y * ligne;
-            octets[debut + bande..debut + ligne - bande]
-                .iter()
-                .fold(0xcbf2_9ce4_8422_2325u64, |h, &o| (h ^ o as u64).wrapping_mul(0x100_0000_01b3))
-        })
-        .collect()
+/// Une page animee (le fond d'une carte qui pulse, un cadre qui bat, une icone qui
+/// tourne : la liste animee d'une application de bureau, 13 octobre 2026) n'est jamais relue a
+/// l'identique. Un pixel ne compte comme change qu'au-dela de cet ecart sur un canal,
+/// une ligne reste la meme tant que moins d'un pixel sur 20 a change, et un decalage
+/// tient tant que moins d'une ligne sur 10 s'ecarte. Mesure sur deux lectures de cette
+/// application immobile : 1 % de lignes ecartees au bon decalage, 31 % au meilleur des faux.
+const ECART_PIXEL: u8 = 40;
+const PIXELS_TOLERES: usize = 20;
+const LIGNES_TOLEREES: usize = 10;
+
+/// Les lignes d'une vue, sans leurs bandes laterales, pretes a etre comparees.
+pub struct Lignes {
+    octets: Vec<u8>,
+    /// Octets d'une ligne entiere, et de chaque bande ecartee.
+    ligne: usize,
+    bande: usize,
+    /// L'empreinte exacte de chaque ligne (FNV-1a) : le cas courant, une ligne
+    /// inchangee, se tranche sans lire ses pixels.
+    empreintes: Vec<u64>,
+}
+
+impl Lignes {
+    pub fn de(vue: &RgbaImage) -> Self {
+        let ligne = vue.width() as usize * 4;
+        let bande = bande_laterale(vue.width()) as usize * 4;
+        let octets = vue.as_raw().clone();
+        let empreintes = octets
+            .chunks_exact(ligne)
+            .map(|l| l[bande..ligne - bande].iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &o| (h ^ o as u64).wrapping_mul(0x100_0000_01b3)))
+            .collect();
+        Lignes { octets, ligne, bande, empreintes }
+    }
+
+    fn len(&self) -> usize {
+        self.empreintes.len()
+    }
+
+    fn utiles(&self, y: usize) -> &[u8] {
+        &self.octets[y * self.ligne + self.bande..(y + 1) * self.ligne - self.bande]
+    }
+
+    /// La ligne `y` montre le meme contenu que la ligne `z` de `autre`, a
+    /// l'animation pres.
+    fn pareille(&self, y: usize, autre: &Lignes, z: usize) -> bool {
+        if self.empreintes[y] == autre.empreintes[z] {
+            return true;
+        }
+        let (a, b) = (self.utiles(y), autre.utiles(z));
+        let toleres = a.len() / 4 / PIXELS_TOLERES;
+        let mut changes = 0;
+        for (pa, pb) in a.chunks_exact(4).zip(b.chunks_exact(4)) {
+            if pa[..3].iter().zip(&pb[..3]).any(|(x, y)| x.abs_diff(*y) > ECART_PIXEL) {
+                changes += 1;
+                if changes > toleres {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// Les deux vues montrent la meme chose, a l'animation pres : relue sans
+    /// avoir defile.
+    fn meme_vue(&self, autre: &Lignes) -> bool {
+        self.len() == autre.len() && ecarts(self, autre, 0, 0..self.len()).is_some()
+    }
+}
+
+/// Les lignes `r` de `n` qui s'ecartent de la ligne `r + d` de `p`, et celles qui
+/// sont identiques ; `None` des que les ecarts depassent une ligne sur 10.
+fn ecarts(p: &Lignes, n: &Lignes, d: usize, lignes: std::ops::Range<usize>) -> Option<(usize, usize)> {
+    let toleres = lignes.len() / LIGNES_TOLEREES;
+    let (mut ecarts, mut exactes) = (0, 0);
+    for r in lignes {
+        if n.empreintes[r] == p.empreintes[r + d] {
+            exactes += 1;
+        } else if !n.pareille(r, p, r + d) {
+            ecarts += 1;
+            if ecarts > toleres {
+                return None;
+            }
+        }
+    }
+    Some((ecarts, exactes))
 }
 
 /// Le decalage `d` tel que la ligne `r` de `n` soit la ligne `r + d` de `p`, en
-/// dehors de l'en-tete et du pied fixes ; et la hauteur `b` de ce pied. Plusieurs
-/// decalages possibles (zone unie, motif repete) : le plus proche de `prefere`,
-/// le plus petit sans preference.
-pub fn decalage(p: &[u64], n: &[u64], prefere: Option<u32>) -> Result<(u32, u32), Pas> {
+/// dehors de l'en-tete et du pied fixes ; et la hauteur `b` de ce pied. Le moins
+/// d'ecarts gagne, puis le plus de lignes identiques ; a egalite (zone unie, motif
+/// repete), le plus proche de `prefere`, le plus petit sans preference.
+pub fn decalage(p: &Lignes, n: &Lignes, prefere: Option<u32>) -> Result<(u32, u32), Pas> {
+    match decalage_exact(&p.empreintes, &n.empreintes, prefere) {
+        Err(Pas::Introuvable) => decalage_tolerant(p, n, prefere),
+        trouve => trouve,
+    }
+}
+
+/// Le recollage au pixel pres (ADR-015) : une page qui ne bouge pas s'y tranche en
+/// quelques lignes lues, quand la recherche tolerante lit des lignes entieres
+/// (16 s pour un plein ecran dans l'exe de debug, mesure le 13 octobre 2026).
+fn decalage_exact(p: &[u64], n: &[u64], prefere: Option<u32>) -> Result<(u32, u32), Pas> {
     let h = p.len().min(n.len());
     let t = (0..h).take_while(|&y| p[y] == n[y]).count();
     if t == h {
@@ -58,6 +137,29 @@ pub fn decalage(p: &[u64], n: &[u64], prefere: Option<u32>) -> Result<(u32, u32)
         None => valides.min(),
     };
     choisi.map(|d| (d as u32, b as u32)).ok_or(Pas::Introuvable)
+}
+
+fn decalage_tolerant(p: &Lignes, n: &Lignes, prefere: Option<u32>) -> Result<(u32, u32), Pas> {
+    let h = p.len().min(n.len());
+    let t = (0..h).take_while(|&y| n.pareille(y, p, y)).count();
+    if t == h {
+        return Err(Pas::Immobile);
+    }
+    let b = (0..h).rev().take_while(|&y| n.pareille(y, p, y)).count();
+    let bande = h - t - b;
+    let recouvrement = (bande / 8).max(8);
+    let proximite = |d: usize| prefere.map_or(d as i64, |q| (d as i64 - q as i64).abs());
+    // ponytail: recherche en O(bande²) lignes au pire, chaque decalage s'arrete des qu'il depasse les ecarts toleres ; une vue fait au plus la hauteur de l'ecran.
+    let choisi = (1..bande.saturating_sub(recouvrement) + 1)
+        .filter_map(|d| ecarts(p, n, d, t..h - b - d).map(|(e, x)| (d, e, x, h - b - d - t)))
+        .min_by_key(|&(d, e, x, l)| (e * h / l, std::cmp::Reverse(x * h / l), proximite(d)));
+    // Relue sans avoir defile, l'animation en plus : moins d'ecarts sur place qu'au meilleur decalage.
+    if let Some((e0, _)) = ecarts(p, n, 0, 0..h) {
+        if choisi.map_or(true, |(_, e, _, l)| e0 * l <= e * h) {
+            return Err(Pas::Immobile);
+        }
+    }
+    choisi.map(|(d, ..)| (d as u32, b as u32)).ok_or(Pas::Introuvable)
 }
 
 /// Le sens du defilement (ADR-019). Le recollage travaille toujours « vers le
@@ -110,14 +212,14 @@ pub struct Recollage {
     largeur: u32,
     /// Lignes RGBA du resultat, bout a bout.
     pixels: Vec<u8>,
-    precedente: Vec<u64>,
+    precedente: Lignes,
     dernier: Option<u32>,
 }
 
 impl Recollage {
     pub fn nouveau(premiere: &RgbaImage, sens: Sens) -> Self {
         let premiere = vers_bas(premiere, sens);
-        Recollage { sens, largeur: premiere.width(), precedente: empreintes(&premiere), pixels: premiere.into_raw(), dernier: None }
+        Recollage { sens, largeur: premiere.width(), precedente: Lignes::de(&premiere), pixels: premiere.into_raw(), dernier: None }
     }
 
     /// La taille de l'image sur l'axe du defilement.
@@ -130,7 +232,7 @@ impl Recollage {
     /// sur le pied de la derniere vue. Rien ne change hors d'un `Decale`.
     pub fn ajouter(&mut self, vue: &RgbaImage) -> Pas {
         let vue = &vers_bas(vue, self.sens);
-        let nouvelles = empreintes(vue);
+        let nouvelles = Lignes::de(vue);
         let (d, b) = match decalage(&self.precedente, &nouvelles, self.dernier) {
             Ok(trouve) => trouve,
             Err(pas) => return pas,
@@ -157,12 +259,12 @@ impl Recollage {
 pub struct Detection {
     candidats: Vec<(Sens, Recollage)>,
     /// La derniere vue lue, recollee ou non.
-    lue: Vec<u8>,
+    lue: Lignes,
 }
 
 impl Detection {
     pub fn nouvelle(premiere: &RgbaImage) -> Self {
-        Detection { candidats: TOUS.iter().map(|&s| (s, Recollage::nouveau(premiere, s))).collect(), lue: premiere.as_raw().clone() }
+        Detection { candidats: TOUS.iter().map(|&s| (s, Recollage::nouveau(premiere, s))).collect(), lue: Lignes::de(premiere) }
     }
 
     /// Le sens garde, `None` tant que rien n'a recolle.
@@ -172,14 +274,17 @@ impl Detection {
     }
 
     /// Un recollage qui ne rend pas `Decale` ne change pas : les essayer tous
-    /// ne coute aucune copie. Une vue n'entre que relue identique : la zone est lue
-    /// pendant que la page se repeint, et une vue dechiree (le haut deja defile, le
-    /// bas pas encore peint) recollerait un bas perime. En attendant : `Immobile`.
+    /// ne coute aucune copie. Une vue n'entre que relue la meme, a l'animation
+    /// pres : la zone est lue pendant que la page se repeint, et une vue dechiree (le
+    /// haut deja defile, le bas pas encore peint) recollerait un bas perime. En
+    /// attendant : `Immobile`.
     pub fn ajouter(&mut self, vue: &RgbaImage) -> Pas {
-        if vue.as_raw() != &self.lue {
-            self.lue = vue.as_raw().clone();
+        let lue = Lignes::de(vue);
+        if !lue.meme_vue(&self.lue) {
+            self.lue = lue;
             return Pas::Immobile;
         }
+        self.lue = lue;
         if self.candidats.len() == 1 {
             return self.candidats[0].1.ajouter(vue);
         }
@@ -215,14 +320,38 @@ mod tests {
     /// Colonnes de la barre de defilement simulee, a droite.
     const BARRE: u32 = 10;
 
-    /// Une page dont chaque ligne porte son numero ; `blanches` est une bande
-    /// blanche (debut, longueur).
+    /// Le pixel `x`, `y` d'un contenu dont chaque ligne differe franchement de ses
+    /// voisines, comme du texte : la comparaison tolere les petits ecarts, un simple
+    /// degrade y serait indiscernable.
+    fn melange(x: u32, y: u32) -> image::Rgba<u8> {
+        let k = (x.wrapping_mul(7919) ^ y.wrapping_mul(104_729)).wrapping_mul(2_654_435_761);
+        image::Rgba([k as u8, (k >> 8) as u8, (k >> 16) as u8, 255])
+    }
+
+    /// Une page dont chaque ligne est unique ; `blanches` est une bande blanche
+    /// (debut, longueur).
     fn page(hauteur: u32, blanches: Option<(u32, u32)>) -> RgbaImage {
         RgbaImage::from_fn(L, hauteur, |x, y| {
             if blanches.is_some_and(|(debut, n)| y >= debut && y < debut + n) {
                 image::Rgba([255, 255, 255, 255])
             } else {
-                image::Rgba([(y & 255) as u8, (y >> 8) as u8, (x * 7 % 251) as u8, 255])
+                melange(x, y)
+            }
+        })
+    }
+
+    /// `page` animee a la `phase` donnee, comme cette liste animee : tout
+    /// le fond pulse de 12, une icone de 5 pixels et un cadre de 2 pixels changent
+    /// franchement sur chaque ligne, et une ligne sur 100 (un filet) change entiere.
+    fn animee(page: &RgbaImage, phase: u32) -> RgbaImage {
+        RgbaImage::from_fn(page.width(), page.height(), |x, y| {
+            let p = page.get_pixel(x, y).0;
+            let pulse = |c: u8| if phase % 2 == 1 { c.saturating_add(12) } else { c.saturating_sub(12) };
+            let franc = |c: u8| c.wrapping_add(90 + 40 * (phase % 3) as u8);
+            if y % 100 == 50 || (20..25).contains(&x) || (170..172).contains(&x) {
+                image::Rgba([franc(p[0]), franc(p[1]), franc(p[2]), 255])
+            } else {
+                image::Rgba([pulse(p[0]), pulse(p[1]), pulse(p[2]), 255])
             }
         })
     }
@@ -340,10 +469,74 @@ mod tests {
     #[test]
     fn defilante_contenu_periodique_le_pas_le_plus_proche_du_precedent() {
         // Une page qui se repete toutes les 50 lignes : 20, 70, 120 et 170 recollent.
-        let p: Vec<u64> = (0..400).map(|y| y % 50).collect();
-        let n: Vec<u64> = (0..400).map(|y| (y + 120) % 50).collect();
+        let periodique = RgbaImage::from_fn(L, 1000, |x, y| melange(x, y % 50));
+        let (p, n) = (Lignes::de(&vue(&periodique, 0, 400, 0, 0)), Lignes::de(&vue(&periodique, 120, 400, 0, 0)));
         assert_eq!(decalage(&p, &n, Some(118)), Ok((120, 0)));
         assert_eq!(decalage(&p, &n, None), Ok((20, 0)));
+    }
+
+    #[test]
+    fn defilante_page_animee_recollee() {
+        let p = page(1500, None);
+        let mut r = Recollage::nouveau(&animee(&vue(&p, 0, 400, 40, 30), 0), Sens::Bas);
+        let pas: Vec<Pas> = [(150, 1), (300, 2), (450, 3)].iter().map(|&(d, phase)| r.ajouter(&animee(&vue(&p, d, 400, 40, 30), phase))).collect();
+        assert_eq!(pas, vec![Pas::Decale(150); 3]);
+        let (image, attendue) = (Lignes::de(&r.image()), Lignes::de(&attendue(&p, 450, 400, 40, 30)));
+        assert_eq!(image.len(), attendue.len());
+        // Les filets animes ne ressemblent a rien de fixe : le reste doit etre a sa place.
+        let filets = (0..image.len()).filter(|&y| !image.pareille(y, &attendue, y)).count();
+        assert!(filets <= image.len() / 50, "{filets} lignes hors de leur place");
+    }
+
+    #[test]
+    fn defilante_page_animee_relue_sur_place_est_immobile() {
+        let p = page(1500, None);
+        let mut r = Recollage::nouveau(&animee(&vue(&p, 150, 400, 40, 30), 0), Sens::Bas);
+        assert_eq!(r.ajouter(&animee(&vue(&p, 150, 400, 40, 30), 1)), Pas::Immobile);
+        assert_eq!(r.ajouter(&animee(&vue(&p, 150, 400, 40, 30), 2)), Pas::Immobile);
+        assert_eq!(r.longueur(), 400);
+    }
+
+    #[test]
+    fn defilante_detection_page_animee() {
+        // En manuel, chaque lecture tombe sur une autre phase de l'animation.
+        let p = page(1500, None);
+        let mut d = Detection::nouvelle(&animee(&vue(&p, 0, 400, 0, 0), 0));
+        assert_eq!(d.ajouter(&animee(&vue(&p, 0, 400, 0, 0), 1)), Pas::Immobile);
+        assert_eq!(d.ajouter(&animee(&vue(&p, 120, 400, 0, 0), 2)), Pas::Immobile, "lue une fois, pas encore prise");
+        assert_eq!(d.ajouter(&animee(&vue(&p, 120, 400, 0, 0), 0)), Pas::Decale(120));
+        assert_eq!(d.sens(), Some(Sens::Bas));
+    }
+
+    #[test]
+    fn defilante_page_trop_animee_refusee() {
+        // Une ligne sur 5 qui change entiere : au-dela du tolere, rien ne recolle.
+        let p = page(1500, None);
+        let trop = |v: RgbaImage, phase: u32| {
+            let a = animee(&v, phase);
+            RgbaImage::from_fn(L, 400, |x, y| if y % 5 == 0 { image::Rgba([(phase * 97) as u8, x as u8, 3, 255]) } else { *a.get_pixel(x, y) })
+        };
+        let mut r = Recollage::nouveau(&trop(vue(&p, 0, 400, 0, 0), 0), Sens::Bas);
+        assert_eq!(r.ajouter(&trop(vue(&p, 150, 400, 0, 0), 1)), Pas::Introuvable);
+    }
+
+    /// Deux lectures reelles d'une zone animee, immobile (`zone-a.png`, `zone-b.png`
+    /// dans le dossier `EQUISHOT_VUES_ANIMEES`) : la seconde, coupee de 100 lignes
+    /// en haut, doit recoller a 100 sous le haut de la premiere.
+    #[test]
+    #[ignore]
+    fn defilante_lectures_reelles_animees() {
+        let dossier = std::path::PathBuf::from(std::env::var("EQUISHOT_VUES_ANIMEES").expect("EQUISHOT_VUES_ANIMEES"));
+        let a = image::open(dossier.join("zone-a.png")).unwrap().to_rgba8();
+        let b = image::open(dossier.join("zone-b.png")).unwrap().to_rgba8();
+        let (l, h) = a.dimensions();
+        let haut = image::imageops::crop_imm(&a, 0, 0, l, h - 100).to_image();
+        let bas = image::imageops::crop_imm(&b, 0, 100, l, h - 100).to_image();
+        let mut r = Recollage::nouveau(&a, Sens::Bas);
+        assert_eq!(r.ajouter(&b), Pas::Immobile, "relue sur place");
+        let mut r2 = Recollage::nouveau(&haut, Sens::Bas);
+        assert_eq!(r2.ajouter(&bas), Pas::Decale(100));
+        assert_eq!(r2.longueur(), h);
     }
 
     /// Une image non carree dont chaque pixel dit sa place.
@@ -453,3 +646,4 @@ mod tests {
         identiques_hors_barre(&d.image(), &attendue(&p, 270, 400, 0, 0)).unwrap();
     }
 }
+

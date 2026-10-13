@@ -155,6 +155,7 @@ pub fn run() {
             captures::captures_differe_annuler,
             captures::captures_lister,
             captures::captures_noter,
+            captures::captures_renommer,
             captures::captures_modifier,
             captures::captures_supprimer,
             captures::captures_copier,
