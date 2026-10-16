@@ -1233,7 +1233,7 @@ dependencies = [
 
 [[package]]
 name = "equishot"
-version = "0.21.3"
+version = "0.21.4"
 dependencies = [
  "arboard",
  "base64 0.22.1",

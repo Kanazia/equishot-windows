@@ -159,6 +159,7 @@ pub fn run() {
             captures::captures_modifier,
             captures::captures_supprimer,
             captures::captures_copier,
+            captures::captures_copier_plusieurs,
             captures::captures_dossier,
             captures::captures_ouvrir_dossier,
             captures::captures_montrer,

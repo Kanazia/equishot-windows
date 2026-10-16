@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "EquiShot",
   "mainBinaryName": "EquiShot",
-  "version": "0.21.3",
+  "version": "0.21.4",
   "identifier": "fr.equinox.equishot",
   "build": {
     "beforeDevCommand": "npm run dev",

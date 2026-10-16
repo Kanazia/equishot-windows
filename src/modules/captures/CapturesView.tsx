@@ -11,6 +11,7 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   adresse,
   capturesCopier,
+  capturesCopierPlusieurs,
   capturesCopierTexte,
   capturesEtatRaccourci,
   capturesLister,
@@ -70,6 +71,7 @@ export function CapturesView({ onReglages }: { onReglages: () => void }) {
   const [ouverte, setOuverte] = useState<{ capture: Capture; edition: boolean } | null>(null);
   const [selection, setSelection] = useState<ReadonlySet<number>>(new Set());
   const [erreurAction, setErreurAction] = useState("");
+  const [copiees, setCopiees] = useState(false);
 
   const terme = recherche.trim();
   // Jamais tenue pour fraîche : une capture prise par le raccourci pendant
@@ -131,12 +133,30 @@ export function CapturesView({ onReglages }: { onReglages: () => void }) {
       return apres;
     });
 
+  /** Les fichiers des captures choisies, dans l'ordre de la galerie, et leurs chemins en texte. */
+  async function copierSelection() {
+    setErreurAction("");
+    try {
+      await capturesCopierPlusieurs(liste.filter((c) => selection.has(c.id)).map((c) => c.id));
+      setCopiees(true);
+      window.setTimeout(() => setCopiees(false), 2000);
+    } catch (e) {
+      setCopiees(false);
+      setErreurAction(errorText(e));
+    }
+  }
+
   useEffect(() => {
     if (!enSelection || ouverte) return;
-    const touche = (evenement: KeyboardEvent) => evenement.key === "Escape" && setSelection(new Set());
+    const touche = (evenement: KeyboardEvent) => {
+      if (evenement.key === "Escape") setSelection(new Set());
+      // Ctrl+C comme dans l'Explorateur, sauf dans un champ (la recherche garde son copier).
+      const champ = evenement.target instanceof HTMLElement && evenement.target.closest("input, textarea, [contenteditable]");
+      if (evenement.ctrlKey && evenement.key.toLowerCase() === "c" && !champ) void copierSelection();
+    };
     window.addEventListener("keydown", touche);
     return () => window.removeEventListener("keydown", touche);
-  }, [enSelection, ouverte]);
+  });
 
   /** Supprime `cibles` après une seule confirmation ; s'arrête à la première qui résiste. */
   async function supprimer(cibles: Capture[]) {
@@ -244,8 +264,19 @@ export function CapturesView({ onReglages }: { onReglages: () => void }) {
           <Button
             variant="ghost"
             size="sm"
+            data-testid="selection-copier"
+            className="ml-auto"
+            title="Copier les fichiers et leurs chemins : Ctrl+V les dépose dans un dossier, une messagerie ou un champ de texte"
+            onClick={() => void copierSelection()}
+          >
+            <Icon name="content_copy" size={14} />
+            <span aria-live="polite">{copiees ? (selection.size > 1 ? "Copiées" : "Copiée") : "Copier"}</span>
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
             data-testid="selection-supprimer"
-            className="ml-auto text-on-surface-variant hover:text-error"
+            className="text-on-surface-variant hover:text-error"
             onClick={() => void supprimer(liste.filter((c) => selection.has(c.id)))}
           >
             <Icon name="delete" size={14} />

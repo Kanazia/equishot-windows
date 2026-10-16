@@ -31,6 +31,14 @@ const ECART_PIXEL: u8 = 40;
 const PIXELS_TOLERES: usize = 20;
 const LIGNES_TOLEREES: usize = 10;
 
+/// La barre de defilement (13 octobre 2026) : un curseur gris 77 sur un rail 29, soit
+/// 48 d'ecart, et 4 colonnes fixes jusqu'au bord de la fenetre. Une colonne de la bande
+/// droite en fait partie quand elle change d'une vue a l'autre (au-dela de cet ecart)
+/// sur plus d'une ligne recouverte sur 50 ; la barre commence a quelques colonnes du bord au plus.
+const ECART_BARRE: u8 = 24;
+const LIGNES_BARRE: u64 = 50;
+const BORD_FIXE: usize = 6;
+
 /// Les lignes d'une vue, sans leurs bandes laterales, pretes a etre comparees.
 pub struct Lignes {
     octets: Vec<u8>,
@@ -56,6 +64,10 @@ impl Lignes {
 
     fn len(&self) -> usize {
         self.empreintes.len()
+    }
+
+    fn pixel(&self, x: usize, y: usize) -> &[u8] {
+        &self.octets[y * self.ligne + x * 4..][..4]
     }
 
     fn utiles(&self, y: usize) -> &[u8] {
@@ -108,10 +120,10 @@ fn ecarts(p: &Lignes, n: &Lignes, d: usize, lignes: std::ops::Range<usize>) -> O
 }
 
 /// Le decalage `d` tel que la ligne `r` de `n` soit la ligne `r + d` de `p`, en
-/// dehors de l'en-tete et du pied fixes ; et la hauteur `b` de ce pied. Le moins
+/// dehors de l'en-tete et du pied fixes ; et les hauteurs `t` de cet en-tete et `b` de ce pied. Le moins
 /// d'ecarts gagne, puis le plus de lignes identiques ; a egalite (zone unie, motif
 /// repete), le plus proche de `prefere`, le plus petit sans preference.
-pub fn decalage(p: &Lignes, n: &Lignes, prefere: Option<u32>) -> Result<(u32, u32), Pas> {
+pub fn decalage(p: &Lignes, n: &Lignes, prefere: Option<u32>) -> Result<(u32, u32, u32), Pas> {
     match decalage_exact(&p.empreintes, &n.empreintes, prefere) {
         Err(Pas::Introuvable) => decalage_tolerant(p, n, prefere),
         trouve => trouve,
@@ -121,7 +133,7 @@ pub fn decalage(p: &Lignes, n: &Lignes, prefere: Option<u32>) -> Result<(u32, u3
 /// Le recollage au pixel pres (ADR-015) : une page qui ne bouge pas s'y tranche en
 /// quelques lignes lues, quand la recherche tolerante lit des lignes entieres
 /// (16 s pour un plein ecran dans l'exe de debug, mesure le 13 octobre 2026).
-fn decalage_exact(p: &[u64], n: &[u64], prefere: Option<u32>) -> Result<(u32, u32), Pas> {
+fn decalage_exact(p: &[u64], n: &[u64], prefere: Option<u32>) -> Result<(u32, u32, u32), Pas> {
     let h = p.len().min(n.len());
     let t = (0..h).take_while(|&y| p[y] == n[y]).count();
     if t == h {
@@ -136,10 +148,10 @@ fn decalage_exact(p: &[u64], n: &[u64], prefere: Option<u32>) -> Result<(u32, u3
         Some(q) => valides.min_by_key(|&d| (d as i64 - q as i64).abs()),
         None => valides.min(),
     };
-    choisi.map(|d| (d as u32, b as u32)).ok_or(Pas::Introuvable)
+    choisi.map(|d| (d as u32, t as u32, b as u32)).ok_or(Pas::Introuvable)
 }
 
-fn decalage_tolerant(p: &Lignes, n: &Lignes, prefere: Option<u32>) -> Result<(u32, u32), Pas> {
+fn decalage_tolerant(p: &Lignes, n: &Lignes, prefere: Option<u32>) -> Result<(u32, u32, u32), Pas> {
     let h = p.len().min(n.len());
     let t = (0..h).take_while(|&y| n.pareille(y, p, y)).count();
     if t == h {
@@ -159,7 +171,7 @@ fn decalage_tolerant(p: &Lignes, n: &Lignes, prefere: Option<u32>) -> Result<(u3
             return Err(Pas::Immobile);
         }
     }
-    choisi.map(|(d, ..)| (d as u32, b as u32)).ok_or(Pas::Introuvable)
+    choisi.map(|(d, ..)| (d as u32, t as u32, b as u32)).ok_or(Pas::Introuvable)
 }
 
 /// Le sens du defilement (ADR-019). Le recollage travaille toujours « vers le
@@ -214,12 +226,17 @@ pub struct Recollage {
     pixels: Vec<u8>,
     precedente: Lignes,
     dernier: Option<u32>,
+    /// Pour chaque colonne de la bande droite, du bord vers l'interieur : les lignes
+    /// recouvertes ou elle a change d'une vue a l'autre ; et les lignes comparees.
+    barre: Vec<u64>,
+    comparees: u64,
 }
 
 impl Recollage {
     pub fn nouveau(premiere: &RgbaImage, sens: Sens) -> Self {
         let premiere = vers_bas(premiere, sens);
-        Recollage { sens, largeur: premiere.width(), precedente: Lignes::de(&premiere), pixels: premiere.into_raw(), dernier: None }
+        let barre = vec![0; bande_laterale(premiere.width()) as usize];
+        Recollage { sens, largeur: premiere.width(), precedente: Lignes::de(&premiere), pixels: premiere.into_raw(), dernier: None, barre, comparees: 0 }
     }
 
     /// La taille de l'image sur l'axe du defilement.
@@ -233,12 +250,21 @@ impl Recollage {
     pub fn ajouter(&mut self, vue: &RgbaImage) -> Pas {
         let vue = &vers_bas(vue, self.sens);
         let nouvelles = Lignes::de(vue);
-        let (d, b) = match decalage(&self.precedente, &nouvelles, self.dernier) {
+        let (d, t, b) = match decalage(&self.precedente, &nouvelles, self.dernier) {
             Ok(trouve) => trouve,
             Err(pas) => return pas,
         };
         let ligne = self.largeur as usize * 4;
         let h = vue.height() as usize;
+        let recouvertes = t as usize..h - b as usize - d as usize;
+        for (k, changes) in self.barre.iter_mut().enumerate() {
+            let x = self.largeur as usize - 1 - k;
+            *changes += recouvertes
+                .clone()
+                .filter(|&r| nouvelles.pixel(x, r)[..3].iter().zip(&self.precedente.pixel(x, r + d as usize)[..3]).any(|(a, b)| a.abs_diff(*b) > ECART_BARRE))
+                .count() as u64;
+        }
+        self.comparees += recouvertes.len() as u64;
         self.pixels.truncate(self.pixels.len() - b as usize * ligne);
         self.pixels.extend_from_slice(&vue.as_raw()[(h - b as usize - d as usize) * ligne..]);
         self.precedente = nouvelles;
@@ -246,10 +272,25 @@ impl Recollage {
         Pas::Decale(d)
     }
 
-    /// L'image recollee, dans le repere de l'ecran.
+    /// La colonne ou commence la barre de defilement : chaque vue y montrait son
+    /// curseur a une autre place, l'image recollee en aurait plusieurs.
+    fn debut_barre(&self) -> Option<u32> {
+        let bouge = |k: &usize| self.barre[*k] * LIGNES_BARRE > self.comparees;
+        let premiere = (0..self.barre.len()).take(BORD_FIXE + 1).find(bouge)?;
+        let largeur = (premiere..self.barre.len()).take_while(bouge).count();
+        Some(self.largeur - (premiere + largeur) as u32)
+    }
+
+    /// L'image recollee, dans le repere de l'ecran, sans la barre de defilement ni
+    /// ce qui la suit jusqu'au bord.
     pub fn image(self) -> RgbaImage {
         let longueur = self.longueur();
-        depuis_bas(&RgbaImage::from_raw(self.largeur, longueur, self.pixels).expect("des lignes entieres"), self.sens)
+        let debut_barre = self.debut_barre();
+        let mut image = RgbaImage::from_raw(self.largeur, longueur, self.pixels).expect("des lignes entieres");
+        if let Some(x) = debut_barre {
+            image = image::imageops::crop_imm(&image, 0, 0, x, longueur).to_image();
+        }
+        depuis_bas(&image, self.sens)
     }
 }
 
@@ -380,10 +421,10 @@ mod tests {
     }
 
     /// L'image attendue : l'en-tete, la page jusqu'au bas de la derniere vue, le
-    /// pied ; comparee hors de la barre.
+    /// pied, sans la barre de defilement.
     fn attendue(page: &RgbaImage, dernier: u32, h: u32, entete: u32, pied: u32) -> RgbaImage {
         let contenu = h - entete - pied;
-        RgbaImage::from_fn(L, entete + dernier + contenu + pied, |x, y| {
+        RgbaImage::from_fn(L - BARRE, entete + dernier + contenu + pied, |x, y| {
             if y < entete {
                 image::Rgba([10, 200, 30, 255])
             } else if y >= entete + dernier + contenu {
@@ -394,12 +435,12 @@ mod tests {
         })
     }
 
-    fn identiques_hors_barre(a: &RgbaImage, b: &RgbaImage) -> Result<(), String> {
+    fn identiques(a: &RgbaImage, b: &RgbaImage) -> Result<(), String> {
         if a.dimensions() != b.dimensions() {
             return Err(format!("{:?} contre {:?}", a.dimensions(), b.dimensions()));
         }
         for y in 0..a.height() {
-            for x in 0..L - BARRE {
+            for x in 0..a.width() {
                 if a.get_pixel(x, y) != b.get_pixel(x, y) {
                     return Err(format!("premier ecart en {x},{y} : {:?} contre {:?}", a.get_pixel(x, y), b.get_pixel(x, y)));
                 }
@@ -420,7 +461,7 @@ mod tests {
         let p = page(1500, None);
         let (image, pas) = recoller(&p, &[0, 150, 300, 450, 600], 400, 0, 0);
         assert_eq!(pas, vec![Pas::Decale(150); 4]);
-        identiques_hors_barre(&image, &attendue(&p, 600, 400, 0, 0)).unwrap();
+        identiques(&image, &attendue(&p, 600, 400, 0, 0)).unwrap();
     }
 
     #[test]
@@ -428,7 +469,7 @@ mod tests {
         let p = page(1500, None);
         let (image, pas) = recoller(&p, &[0, 120, 240, 360], 400, 40, 30);
         assert_eq!(pas, vec![Pas::Decale(120); 3]);
-        identiques_hors_barre(&image, &attendue(&p, 360, 400, 40, 30)).unwrap();
+        identiques(&image, &attendue(&p, 360, 400, 40, 30)).unwrap();
     }
 
     #[test]
@@ -436,7 +477,46 @@ mod tests {
         let p = page(1500, Some((500, 120)));
         let (image, pas) = recoller(&p, &[0, 100, 137, 347, 447, 547, 600], 400, 40, 30);
         assert_eq!(pas, vec![Pas::Decale(100), Pas::Decale(37), Pas::Decale(210), Pas::Decale(100), Pas::Decale(100), Pas::Decale(53)]);
-        identiques_hors_barre(&image, &attendue(&p, 600, 400, 40, 30)).unwrap();
+        identiques(&image, &attendue(&p, 600, 400, 40, 30)).unwrap();
+    }
+
+    /// Une vue comme la liste du 13 octobre 2026 : la page, puis le rail d'une barre
+    /// de 6 colonnes (29) ou le curseur (77) suit le defilement, puis 4 colonnes fixes
+    /// jusqu'au bord de la fenetre.
+    fn vue_a_curseur(page: &RgbaImage, defile: u32, h: u32) -> RgbaImage {
+        let (haut, longueur) = (defile * h / page.height(), h * h / page.height());
+        RgbaImage::from_fn(L, h, |x, y| match x {
+            x if x < L - 10 => *page.get_pixel(x, defile + y),
+            x if x < L - 4 => {
+                let gris = if (haut..haut + longueur).contains(&y) { 77 } else { 29 };
+                image::Rgba([gris, gris, gris, 255])
+            }
+            _ => image::Rgba([21, 21, 21, 255]),
+        })
+    }
+
+    #[test]
+    fn defilante_barre_de_defilement_ecartee_de_l_image() {
+        let p = page(1500, None);
+        for pas in [[0, 150, 300, 450], [0, 20, 40, 60]] {
+            let mut r = Recollage::nouveau(&vue_a_curseur(&p, pas[0], 400), Sens::Bas);
+            for &d in &pas[1..] {
+                assert!(matches!(r.ajouter(&vue_a_curseur(&p, d, 400)), Pas::Decale(_)), "{pas:?} {d}");
+            }
+            let attendue = image::imageops::crop_imm(&p, 0, 0, L - 10, pas[3] + 400).to_image();
+            identiques(&r.image(), &attendue).unwrap_or_else(|e| panic!("{pas:?} : {e}"));
+        }
+    }
+
+    #[test]
+    fn defilante_sans_barre_rien_n_est_rogne() {
+        let p = page(1500, None);
+        let sans_barre = |d: u32| image::imageops::crop_imm(&vue(&p, d, 400, 40, 30), 0, 0, L - BARRE, 400).to_image();
+        let mut r = Recollage::nouveau(&sans_barre(0), Sens::Bas);
+        for d in [150, 300] {
+            assert_eq!(r.ajouter(&sans_barre(d)), Pas::Decale(150));
+        }
+        identiques(&r.image(), &attendue(&p, 300, 400, 40, 30)).unwrap();
     }
 
     #[test]
@@ -444,7 +524,7 @@ mod tests {
         let p = page(1500, None);
         let (image, pas) = recoller(&p, &[0, 150, 150], 400, 40, 30);
         assert_eq!(pas, vec![Pas::Decale(150), Pas::Immobile]);
-        identiques_hors_barre(&image, &attendue(&p, 150, 400, 40, 30)).unwrap();
+        identiques(&image, &attendue(&p, 150, 400, 40, 30)).unwrap();
     }
 
     #[test]
@@ -455,7 +535,7 @@ mod tests {
         assert_eq!(r.ajouter(&autre), Pas::Introuvable);
         assert_eq!(r.longueur(), 400);
         assert_eq!(r.ajouter(&vue(&p, 150, 400, 0, 0)), Pas::Decale(150));
-        identiques_hors_barre(&r.image(), &attendue(&p, 150, 400, 0, 0)).unwrap();
+        identiques(&r.image(), &attendue(&p, 150, 400, 0, 0)).unwrap();
     }
 
     #[test]
@@ -471,8 +551,8 @@ mod tests {
         // Une page qui se repete toutes les 50 lignes : 20, 70, 120 et 170 recollent.
         let periodique = RgbaImage::from_fn(L, 1000, |x, y| melange(x, y % 50));
         let (p, n) = (Lignes::de(&vue(&periodique, 0, 400, 0, 0)), Lignes::de(&vue(&periodique, 120, 400, 0, 0)));
-        assert_eq!(decalage(&p, &n, Some(118)), Ok((120, 0)));
-        assert_eq!(decalage(&p, &n, None), Ok((20, 0)));
+        assert_eq!(decalage(&p, &n, Some(118)), Ok((120, 0, 0)));
+        assert_eq!(decalage(&p, &n, None), Ok((20, 0, 0)));
     }
 
     #[test]
@@ -578,7 +658,7 @@ mod tests {
             }
             assert_eq!(r.longueur(), 40 + 447 + 330 + 30, "{sens:?}");
             let image = vers_bas(&r.image(), sens);
-            identiques_hors_barre(&image, &attendue(&p, 447, 400, 40, 30)).unwrap();
+            identiques(&image, &attendue(&p, 447, 400, 40, 30)).unwrap();
         }
     }
 
@@ -614,7 +694,7 @@ mod tests {
         // Saut trop grand puis retour pres de la derniere vue recollee : la suite reprend.
         assert_eq!(relue(&mut d, &vue(&p, 900, 400, 0, 0)), Pas::Introuvable);
         assert_eq!(relue(&mut d, &vue(&p, 300, 400, 0, 0)), Pas::Decale(150));
-        identiques_hors_barre(&d.image(), &attendue(&p, 300, 400, 0, 0)).unwrap();
+        identiques(&d.image(), &attendue(&p, 300, 400, 0, 0)).unwrap();
     }
 
     /// La vue lue, puis relue si elle n'a pas ete prise : la boucle relit la zone
@@ -643,7 +723,7 @@ mod tests {
         // Lue une fois pendant le repeint, puis la page repeinte, relue.
         d.ajouter(&dechiree(&p, 150, 270, 400));
         relue(&mut d, &vue(&p, 270, 400, 0, 0));
-        identiques_hors_barre(&d.image(), &attendue(&p, 270, 400, 0, 0)).unwrap();
+        identiques(&d.image(), &attendue(&p, 270, 400, 0, 0)).unwrap();
     }
 }
 

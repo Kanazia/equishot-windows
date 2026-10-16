@@ -320,6 +320,25 @@ pub(crate) fn copier_fichier(chemin: &std::path::Path) -> Result<(), String> {
         .map_err(|e| format!("Copie du fichier dans le presse-papiers impossible : {e}"))
 }
 
+/// Plusieurs captures a la fois (selection de la galerie) : leurs fichiers
+/// (`CF_HDROP`) et leurs chemins en texte. Un dossier ou une messagerie prend les
+/// fichiers, un champ de texte ou un terminal les chemins.
+pub(crate) fn copier_fichiers(chemins: &[PathBuf]) -> Result<(), String> {
+    arboard::Clipboard::new()
+        .and_then(|mut presse_papiers| {
+            // Le texte vide le presse-papiers avant d'ecrire ; la liste de fichiers s'y ajoute sans vider.
+            presse_papiers.set_text(chemins_en_texte(chemins))?;
+            presse_papiers.set().file_list(chemins)
+        })
+        .map_err(|e| format!("Copie des captures dans le presse-papiers impossible : {e}"))
+}
+
+/// Les chemins comme « Copier en tant que chemin » de l'Explorateur : entre
+/// guillemets, un par ligne.
+fn chemins_en_texte(chemins: &[PathBuf]) -> String {
+    chemins.iter().map(|c| format!("\"{}\"", c.display())).collect::<Vec<_>>().join("\r\n")
+}
+
 /// La capture `id`, lue en base, chemins absolus. Bloquant : hors du thread principal.
 pub fn lire(app: &tauri::AppHandle, id: i64) -> Result<Capture, String> {
     let dossier = dossier(app)?;
@@ -1798,6 +1817,23 @@ pub async fn captures_copier(app: tauri::AppHandle, id: i64) -> Result<(), Strin
     .await
 }
 
+/// « Copier » de la barre de selection : les fichiers que l'Explorateur montrerait
+/// (l'image annotee, ou le MP4), dans l'ordre donne.
+#[tauri::command]
+pub async fn captures_copier_plusieurs(app: tauri::AppHandle, ids: Vec<i64>) -> Result<(), String> {
+    hors_thread_principal(app, move |app| {
+        let chemins = ids
+            .iter()
+            .map(|&id| lire(&app, id).map(|capture| PathBuf::from(fichier_montre(&capture))))
+            .collect::<Result<Vec<_>, _>>()?;
+        if chemins.is_empty() {
+            return Err("Aucune capture choisie.".to_string());
+        }
+        copier_fichiers(&chemins)
+    })
+    .await
+}
+
 /// Le chemin du dossier des captures, pour le montrer dans les reglages.
 #[tauri::command]
 pub async fn captures_dossier(app: tauri::AppHandle) -> Result<String, String> {
@@ -1963,6 +1999,41 @@ mod tests {
         let _ = std::fs::remove_file(&fichier);
         assert!(formats.split(',').any(|f| f == "FileDrop"), "formats vus : {formats}");
         assert!(!formats.contains("Text"), "l'ancien texte reste : {formats}");
+    }
+
+    #[test]
+    fn plusieurs_chemins_comme_l_explorateur() {
+        let chemins = [PathBuf::from(r"C:\a b\1.png"), PathBuf::from(r"C:\2.mp4")];
+        assert_eq!(chemins_en_texte(&chemins), "\"C:\\a b\\1.png\"\r\n\"C:\\2.mp4\"");
+    }
+
+    /// Essai reel : `cargo test --lib plusieurs_fichiers_au_presse_papiers -- --ignored`.
+    /// Ecrase le presse-papiers. Les lecteurs OLE doivent voir les deux fichiers et
+    /// leurs chemins en texte.
+    #[test]
+    #[ignore = "presse-papiers reel"]
+    fn plusieurs_fichiers_au_presse_papiers() {
+        let ps = |commande: &str| {
+            let sortie = std::process::Command::new("powershell.exe")
+                .args(["-NoProfile", "-STA", "-Command", commande])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&sortie.stdout).trim().to_string()
+        };
+        let chemins: Vec<PathBuf> = ["png", "mp4"].iter().map(|e| std::env::temp_dir().join(format!("equishot-essai-plusieurs.{e}"))).collect();
+        for c in &chemins {
+            std::fs::write(c, b"essai").unwrap();
+        }
+        copier_fichiers(&chemins).unwrap();
+        let lu = |quoi: &str| ps(&format!("Add-Type -A System.Windows.Forms; [Windows.Forms.Clipboard]::{quoi}"));
+        let fichiers = lu("GetFileDropList() -join '|'");
+        let texte = lu("GetText()");
+        for c in &chemins {
+            let _ = std::fs::remove_file(c);
+        }
+        let attendus = chemins.iter().map(|c| c.display().to_string()).collect::<Vec<_>>();
+        assert_eq!(fichiers.to_lowercase(), attendus.join("|").to_lowercase(), "fichiers vus");
+        assert_eq!(texte.replace("\r\n", "\n"), chemins_en_texte(&chemins).replace("\r\n", "\n"), "texte vu");
     }
 
     #[test]

@@ -161,6 +161,9 @@ export const capturesCopierCouleur = (couleur: string) => invoke<void>("captures
 
 export const capturesCopier = (id: number) => invoke<void>("captures_copier", { id });
 
+/** « Copier » de la sélection : les fichiers, et leurs chemins en texte. */
+export const capturesCopierPlusieurs = (ids: number[]) => invoke<void>("captures_copier_plusieurs", { ids });
+
 export const capturesDossier = () => invoke<string>("captures_dossier");
 export const capturesOuvrirDossier = () => invoke<string>("captures_ouvrir_dossier");
 /** L'Explorateur, le fichier de la capture sélectionné (le MP4 d'une vidéo). */
