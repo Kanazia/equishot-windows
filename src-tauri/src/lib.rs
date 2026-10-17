@@ -89,7 +89,7 @@ pub fn run() {
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, raccourci, evenement| {
-                    if evenement.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                    if evenement.state == tauri_plugin_global_shortcut::ShortcutState::Pressed && !video::sur_raccourci_effet(app, raccourci) {
                         captures::sur_raccourci(app, raccourci);
                     }
                 })
@@ -189,6 +189,7 @@ pub fn run() {
             video::video_arreter,
             video::video_abandonner,
             video::video_pauser,
+            video::video_effet,
             video::video_etat,
             video::video_reglages,
             video::video_regler,

@@ -1,6 +1,6 @@
 [package]
 name = "equishot"
-version = "0.21.4"
+version = "0.22.0"
 description = "EquiShot, compagnon de capture d'ecran d'Equinox AI"
 authors = ["Equinox AI"]
 edition = "2021"
@@ -47,7 +47,7 @@ drag = "2.1.1"
 
 [target.'cfg(windows)'.dependencies]
 # Curseur en croix, premier plan rendu : deja dans l'arbre.
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_UI_Shell", "Win32_System_Registry"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_UI_Shell", "Win32_System_Registry", "Win32_Graphics_Gdi"] }
 # Windows.Media.Ocr (ADR-010). Version deja tiree par Tauri : aucune crate neuve.
 windows = { version = "=0.61.3", features = ["Foundation", "Foundation_Collections", "Globalization", "Graphics_Imaging", "Media_Ocr", "Storage_Streams"] }
 # Le gestionnaire d'autorisation de la camera (ADR-017, 0.18) : wry 0.55.1 n'accorde d'office que
@@ -58,9 +58,13 @@ webview2-com = "=0.38.2"
 # ceux de cette version, d'ou le second nom.
 windows-capture = "=2.0.1"
 wasapi = "=0.25.0"
+# Les matrices et vecteurs de Direct2D (effets, 0.22), deja dans le verrou par windows 0.62.2.
+windows-numerics = "=0.3.1"
 windows62 = { package = "windows", version = "=0.62.2", features = [
     "Graphics_DirectX_Direct3D11",
     "Win32_Foundation",
+    "Win32_Graphics_Direct2D",
+    "Win32_Graphics_Direct2D_Common",
     "Win32_Graphics_Direct3D11",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",

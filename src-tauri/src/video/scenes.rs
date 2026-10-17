@@ -95,7 +95,8 @@ pub fn id_du_menu(id: &str) -> Option<i64> {
 
 pub const NOM_MAX: usize = 40;
 
-/// Ce qu'une scene remet dans les reglages : le son et la bulle, sa place comprise.
+/// Ce qu'une scene remet dans les reglages : le son, la bulle, sa place comprise, et
+/// les effets (0.22).
 /// Le curseur n'en est pas : c'est un gout, pas une scene.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -111,6 +112,9 @@ pub struct Mise {
     pub camera_taille: Taille,
     pub camera_miroir: bool,
     pub camera_place: Option<(f64, f64)>,
+    pub onde: bool,
+    pub trainee: bool,
+    pub curseur_taille: f32,
 }
 
 impl Default for Mise {
@@ -133,6 +137,9 @@ impl Mise {
             camera_taille: r.camera_taille,
             camera_miroir: r.camera_miroir,
             camera_place: r.camera_place,
+            onde: r.onde,
+            trainee: r.trainee,
+            curseur_taille: r.curseur_taille,
         }
     }
 
@@ -152,6 +159,9 @@ impl Mise {
             camera_taille: self.camera_taille,
             camera_miroir: self.camera_miroir,
             camera_place: self.camera_place,
+            onde: self.onde,
+            trainee: self.trainee,
+            curseur_taille: self.curseur_taille,
         }
     }
 }

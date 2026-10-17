@@ -1,7 +1,8 @@
 /**
  * La barre d'enregistrement vidéo (ADR-016, ADR-017). Elle s'ouvre en panneau
  * de mise en scène (`Preparation`), puis devient la barre : le décompte, puis la
- * durée filmée, « Pause » / « Reprendre », « Arrêter », « Abandonner ». Rust la
+ * durée filmée, le zoom et le projecteur (0.22), « Pause » / « Reprendre »,
+ * « Arrêter », « Abandonner ». Rust la
  * rend invisible aux captures (`content_protected`) et, une fois lancée, non
  * focalisable : un clic ici laisse le premier plan à l'application filmée.
  * Survolée, elle s'efface et laisse passer les clics, sauf sa poignée (le point
@@ -22,6 +23,7 @@ import {
   surSurvolVideo,
   videoAbandonner,
   videoArreter,
+  videoEffet,
   videoEtat,
   videoPauser,
   type EtatBarre,
@@ -41,8 +43,38 @@ function Jauge({ niveau, titre }: { niveau: number; titre: string }) {
   );
 }
 
+/** Le zoom ou le projecteur (0.22) : allumé, il prend l'accent ; son titre rappelle le raccourci. */
+function BasculeEffet(props: { testid: string; icone: string; nom: string; raccourci: string; allume: boolean; onClick: () => void; classe: string }) {
+  const titre = props.raccourci ? `${props.nom} (${props.raccourci})` : props.nom;
+  return (
+    <button
+      type="button"
+      data-testid={props.testid}
+      aria-pressed={props.allume}
+      aria-label={props.nom}
+      title={titre}
+      onClick={props.onClick}
+      className={cn(props.classe, "w-9 justify-center px-0", props.allume ? "bg-primary/15 text-primary hover:bg-primary/25" : "eq-hover text-on-surface")}
+    >
+      <Icon name={props.icone} size={17} filled={props.allume} />
+    </button>
+  );
+}
+
 function Barre() {
-  const [etat, setEtat] = useState<EtatBarre>({ phase: "prepare", reste: 3, actifMs: 0, avertissement: null, niveaux: { micro: 0, son: 0 }, notes: [], cameras: [], cible: null });
+  const [etat, setEtat] = useState<EtatBarre>({
+    phase: "prepare",
+    reste: 3,
+    actifMs: 0,
+    avertissement: null,
+    niveaux: { micro: 0, son: 0 },
+    notes: [],
+    cameras: [],
+    cible: null,
+    zoom: false,
+    projecteur: false,
+    raccourcisEffets: ["", ""],
+  });
   const [survol, setSurvol] = useState<Survol>("normale");
   const [erreur, setErreur] = useState("");
   const [envoi, setEnvoi] = useState(false);
@@ -111,6 +143,28 @@ function Barre() {
           <p role={erreur ? "alert" : "status"} title={message ?? undefined} className={cn("min-w-0 flex-1 truncate px-1 text-[11px]", erreur ? "text-error" : "text-muted")}>
             {message}
           </p>
+          {etat.phase !== "decompte" && (
+            <>
+              <BasculeEffet
+                testid="barre-zoom"
+                icone="zoom_in"
+                nom="Zoom"
+                raccourci={etat.raccourcisEffets[0]}
+                allume={etat.zoom}
+                onClick={() => void videoEffet(true).catch((e) => setErreur(errorText(e)))}
+                classe={bouton}
+              />
+              <BasculeEffet
+                testid="barre-projecteur"
+                icone="highlight"
+                nom="Projecteur"
+                raccourci={etat.raccourcisEffets[1]}
+                allume={etat.projecteur}
+                onClick={() => void videoEffet(false).catch((e) => setErreur(errorText(e)))}
+                classe={bouton}
+              />
+            </>
+          )}
           {etat.phase !== "decompte" && (
             <button
               type="button"

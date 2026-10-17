@@ -1,7 +1,8 @@
 /**
  * Le panneau de mise en scène (ADR-017) : la même fenêtre que la barre, en grand
  * et focalisable, avant le décompte. Le micro et la sortie son branchés, leur
- * volume et leur jauge ; « Démarrer » ou Entrée lance, Échap abandonne. Chaque
+ * volume et leur jauge, la caméra, les effets (0.22) ; « Démarrer » ou Entrée
+ * lance, Échap abandonne. Chaque
  * choix s'écrit aussitôt : il vaut pour cette vidéo et les suivantes.
  */
 import { useEffect, useRef, useState } from "react";
@@ -30,6 +31,14 @@ import { choixAffiche, choixLu, fileDeUn, libelleCible, nomDeScene, pourcent, RE
 
 /** Les listes sont relues toutes les 2 s : un casque branché apparaît sans rouvrir. */
 const RELECTURE_MS = 2000;
+
+/** Les grossissements du curseur (0.22) : 1x, Windows le dessine ; au-delà, le moteur. */
+const CURSEURS: [number, string][] = [
+  [1, "1x"],
+  [1.5, "1,5x"],
+  [2, "2x"],
+  [3, "3x"],
+];
 
 /** Les trois diamètres de la bulle de caméra (0.18). */
 const TAILLES: [TailleCamera, string][] = [
@@ -370,6 +379,45 @@ export function Preparation({ etat }: { etat: EtatBarre }) {
                   Miroir
                 </label>
               </div>
+            </div>
+            <div className="flex flex-col gap-1.5" role="group" aria-labelledby="prep-effets-titre">
+              <p id="prep-effets-titre" className="text-[11px] font-medium text-muted">
+                Effets
+              </p>
+              <div className="flex items-center gap-3">
+                <label className="flex items-center gap-1.5 text-[11px] text-on-surface">
+                  <input type="checkbox" data-testid="prep-onde" checked={reglages.onde} onChange={(e) => changer({ onde: e.target.checked })} className="accent-primary" />
+                  Onde au clic
+                </label>
+                <label className="flex items-center gap-1.5 text-[11px] text-on-surface">
+                  <input type="checkbox" data-testid="prep-trainee" checked={reglages.trainee} onChange={(e) => changer({ trainee: e.target.checked })} className="accent-primary" />
+                  Traînée
+                </label>
+                <div
+                  className={cn("ml-auto flex items-center gap-1", !reglages.curseur && "opacity-40")}
+                  title={reglages.curseur ? undefined : "Le curseur est caché dans les réglages."}
+                >
+                  <span className="mr-0.5 text-[11px] text-on-surface">Curseur</span>
+                  {CURSEURS.map(([taille, libelle]) => (
+                    <button
+                      type="button"
+                      key={taille}
+                      data-testid={`prep-curseur-${libelle.replace(",", "-")}`}
+                      aria-pressed={reglages.curseurTaille === taille}
+                      disabled={!reglages.curseur}
+                      onClick={() => changer({ curseurTaille: taille })}
+                      className={cn("h-7 rounded-full px-2 text-[11px] font-medium tabular-nums", reglages.curseurTaille === taille ? "bg-primary text-primary-foreground" : "eq-hover text-on-surface")}
+                    >
+                      {libelle}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {etat.raccourcisEffets[0] && (
+                <p data-testid="prep-effets-raccourcis" className="text-[11px] text-muted">
+                  Pendant la prise : zoom {etat.raccourcisEffets[0]}, projecteur {etat.raccourcisEffets[1]}.
+                </p>
+              )}
             </div>
           </>
         ) : (

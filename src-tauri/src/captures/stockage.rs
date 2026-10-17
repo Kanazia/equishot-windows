@@ -755,9 +755,9 @@ pub fn vers_corbeille(dossier: &Path, fichier: &str) -> Result<(), String> {
     let corbeille = dossier.join(CORBEILLE);
     std::fs::create_dir_all(&corbeille).map_err(|e| format!("Création de {} impossible : {e}", corbeille.display()))?;
     let c = chemins(dossier, fichier);
-    // Le GIF d'une video (ADR-016) suit son MP4.
-    let gif = c.origine.with_extension("gif");
-    for chemin in [c.origine, c.rendu, c.vignette, gif] {
+    // Le GIF d'une video (ADR-016) et le journal de sa souris (ADR-022) suivent son MP4.
+    let (gif, souris) = (c.origine.with_extension("gif"), c.origine.with_extension("souris.json"));
+    for chemin in [c.origine, c.rendu, c.vignette, gif, souris] {
         let Some(nom) = chemin.file_name() else { continue };
         // Un fichier deja absent n'empeche pas de retirer la carte.
         if chemin.exists() {
@@ -781,7 +781,8 @@ pub fn retirer_ligne(conn: &Connection, id: i64) -> Result<(), String> {
 /// ligne, rien ne les montrerait ni ne les nettoierait.
 pub fn effacer_fichiers(dossier: &Path, fichier: &str) {
     let c = chemins(dossier, fichier);
-    for chemin in [c.origine, c.rendu, c.vignette] {
+    let souris = c.origine.with_extension("souris.json");
+    for chemin in [c.origine, c.rendu, c.vignette, souris] {
         let _ = std::fs::remove_file(chemin);
     }
 }

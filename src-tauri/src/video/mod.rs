@@ -8,12 +8,15 @@
 //! ferme. Tout ce qui attend (decompte, moteur, disque) tourne hors du thread
 //! principal.
 
+pub mod animation;
 pub mod bulle;
+pub mod direct;
 pub mod frise;
 pub mod gif;
 pub mod lecture;
 pub mod moteur;
 pub mod ecoute;
+pub mod effets;
 pub mod peripheriques;
 pub mod scenes;
 
@@ -28,18 +31,20 @@ use crate::captures::stockage::{self, Capture, Origine, ZoneCss};
 use crate::{captures, db, fenetres, hors_thread_principal, AppState};
 pub use bulle::Rect;
 use moteur::{Demande, Enregistrement, Reglages};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 
 pub const ETIQUETTE_BARRE: &str = "video-barre";
 /// Emis vers la barre : la phase, le decompte, le temps filme.
 pub const EVENEMENT_ETAT: &str = "video://etat";
 /// Reglage : les choix du son et du curseur, en JSON (`Reglages`).
 const CLE_REGLAGES: &str = "video_reglages";
-/// Taille de la barre, en pixels CSS.
-const BARRE: (f64, f64) = (400.0, 52.0);
+/// Taille de la barre, en pixels CSS. 472 depuis la 0.22 : le zoom et le projecteur y prennent 2 x 36 px.
+const BARRE: (f64, f64) = (472.0, 52.0);
 /// La meme fenetre pendant la mise en scene : le panneau de preparation. La rangee
 /// Camera (0.18) ajoute 90 px estimes, a verifier a l'oeil a la prise unique.
 /// La rangee Scene (0.19) ajoute 70 px estimes, a verifier a l'oeil a la prise unique.
-const PANNEAU: (f64, f64) = (420.0, 500.0);
+/// La rangee Effets (0.22) ajoute 75 px estimes, a verifier a l'oeil.
+const PANNEAU: (f64, f64) = (420.0, 575.0);
 /// Emis vers la barre : `Survol`, a chaque changement.
 const EVENEMENT_SURVOL: &str = "video://survol";
 /// La poignee de la barre (point rouge et duree, a gauche), en pixels CSS.
@@ -91,6 +96,11 @@ struct EnCours {
     cible: scenes::Cible,
     /// La scene appliquee, un ecran de repli : dit par le panneau.
     notes_scene: Vec<String>,
+    /// Les effets de la prise (ADR-022) et les raccourcis du zoom et du projecteur,
+    /// poses seulement pendant qu'elle filme.
+    direct: Option<direct::Partage>,
+    raccourcis: Vec<Shortcut>,
+    raccourcis_lisibles: (String, String),
 }
 
 /// Ce que la barre affiche.
@@ -109,6 +119,10 @@ pub struct EtatBarre {
     cameras: Vec<bulle::Camera>,
     /// Mise en scene : ce qui est filme (0.19).
     cible: Option<scenes::Cible>,
+    /// Le zoom et le projecteur (0.22), et leurs raccourcis lisibles.
+    zoom: bool,
+    projecteur: bool,
+    raccourcis_effets: (String, String),
 }
 
 impl EnCours {
@@ -124,6 +138,7 @@ impl EnCours {
                 notes,
                 cameras: self.cameras.clone(),
                 cible: Some(self.cible.clone()),
+                raccourcis_effets: self.raccourcis_lisibles.clone(),
                 ..Default::default()
             };
         }
@@ -131,6 +146,8 @@ impl EnCours {
             return EtatBarre { phase: "decompte", reste: self.reste, ..Default::default() };
         };
         let actif_ms = enreg.actif_ms();
+        // `try_lock` : le fil des images tient ce verrou le temps d'une scene.
+        let (zoom, projecteur) = self.direct.as_ref().and_then(|d| d.try_lock().ok().map(|d| d.allumes())).unwrap_or_default();
         EtatBarre {
             phase: if enreg.en_pause() { "pause" } else { "filme" },
             reste: 0,
@@ -140,8 +157,82 @@ impl EnCours {
             notes: Vec::new(),
             cameras: self.cameras.clone(),
             cible: None,
+            zoom,
+            projecteur,
+            raccourcis_effets: self.raccourcis_lisibles.clone(),
         }
     }
+}
+
+/// Les raccourcis du zoom et du projecteur, poses pendant la prise. En dev, Maj en plus :
+/// l'instance de production garde les siens.
+fn raccourcis_effets(dev: bool) -> [&'static str; 2] {
+    if dev {
+        ["Ctrl+Alt+Shift+Z", "Ctrl+Alt+Shift+L"]
+    } else {
+        ["Ctrl+Alt+Z", "Ctrl+Alt+L"]
+    }
+}
+
+fn lisible(combinaison: &str) -> String {
+    combinaison.replace("Shift", "Maj").replace('+', " + ")
+}
+
+fn raccourcis_lisibles(dev: bool) -> (String, String) {
+    let [z, l] = raccourcis_effets(dev).map(lisible);
+    (z, l)
+}
+
+/// Pose les deux raccourcis ; rend ceux qui ont tenu et une note par refus. Hors de
+/// tout verrou : le greffon attend le thread principal.
+fn poser_raccourcis_effets(app: &tauri::AppHandle) -> (Vec<Shortcut>, Vec<String>) {
+    let dev = app.state::<AppState>().dev;
+    let (mut poses, mut notes) = (Vec::new(), Vec::new());
+    for (combinaison, nom) in raccourcis_effets(dev).into_iter().zip(["zoom", "projecteur"]) {
+        match combinaison.parse::<Shortcut>() {
+            Ok(r) if app.global_shortcut().register(r).is_ok() => poses.push(r),
+            _ => notes.push(format!("{nom} sans raccourci ({} déjà pris)", lisible(combinaison))),
+        }
+    }
+    (poses, notes)
+}
+
+fn retirer_raccourcis_effets(app: &tauri::AppHandle, raccourcis: &[Shortcut]) {
+    for r in raccourcis {
+        let _ = app.global_shortcut().unregister(*r);
+    }
+}
+
+/// Le gestionnaire global des raccourcis, sur le thread principal : vrai si la frappe
+/// est celle du zoom ou du projecteur d'une prise en cours. Jamais d'attente (`try_lock`).
+pub fn sur_raccourci_effet(app: &tauri::AppHandle, raccourci: &Shortcut) -> bool {
+    let etat = app.state::<EtatVideo>();
+    let Ok(en_cours) = etat.en_cours.try_lock() else { return false };
+    let Some(e) = en_cours.as_ref() else { return false };
+    let Some(i) = e.raccourcis.iter().position(|r| r == raccourci) else { return false };
+    if let Some(mut d) = e.direct.as_ref().and_then(|d| d.try_lock().ok()) {
+        if i == 0 {
+            d.basculer_zoom();
+        } else {
+            d.basculer_projecteur();
+        }
+    }
+    true
+}
+
+/// Les boutons de la barre : bascule le zoom (`zoom`) ou le projecteur.
+#[tauri::command]
+pub async fn video_effet(app: tauri::AppHandle, zoom: bool) {
+    let direct = tenir(&app.state::<EtatVideo>().en_cours).as_ref().and_then(|e| e.direct.clone());
+    if let Some(d) = direct {
+        let mut d = tenir(&d);
+        if zoom {
+            d.basculer_zoom();
+        } else {
+            d.basculer_projecteur();
+        }
+    }
+    dire_etat(&app);
 }
 
 /// La ligne de la barre : sources absentes, perdues, notes de la camera, puis le plafond.
@@ -349,7 +440,7 @@ async fn ouvrir_mise_en_scene(app: tauri::AppHandle, visee: Visee, devant: isize
             origine: origine.clone(),
             absentes: Vec::new(),
             ecoute: Some(ecoute::Ecoute::lancer(&reglages)),
-            demande: Some(Demande { ecran: position, zone, sortie: sortie_mp4, reglages }),
+            demande: Some(Demande { ecran: position, zone, sortie: sortie_mp4, reglages, effets: None }),
             places,
             devant,
             zone_bureau,
@@ -359,6 +450,9 @@ async fn ouvrir_mise_en_scene(app: tauri::AppHandle, visee: Visee, devant: isize
             notes_camera: Vec::new(),
             cible,
             notes_scene,
+            direct: None,
+            raccourcis: Vec::new(),
+            raccourcis_lisibles: raccourcis_lisibles(app.state::<AppState>().dev),
         });
     }
     // Une zone tracee garde son contour, traverse par la souris ; l'ecran entier ferme la
@@ -744,10 +838,6 @@ fn suivre_survol(app: &tauri::AppHandle, avant: Survol) -> Survol {
     nouveau
 }
 
-fn encore(app: &tauri::AppHandle, numero: u64) -> bool {
-    tenir(&app.state::<EtatVideo>().en_cours).as_ref().is_some_and(|e| e.numero == numero)
-}
-
 /// Le fil d'un enregistrement : 3, 2, 1, puis le moteur, puis l'etat de la
 /// barre et son survol toutes les 50 ms, et le plafond d'une heure.
 fn decompter_puis_filmer(app: tauri::AppHandle, numero: u64, demande: Demande) {
@@ -760,10 +850,16 @@ fn decompter_puis_filmer(app: tauri::AppHandle, numero: u64, demande: Demande) {
         dire_etat(&app);
         std::thread::sleep(Duration::from_secs(1));
     }
-    if !encore(&app, numero) {
-        return;
-    }
+    let lu = tenir(&app.state::<EtatVideo>().en_cours).as_ref().filter(|e| e.numero == numero).map(|e| ((e.zone_bureau.0, e.zone_bureau.1), e.echelle));
+    let Some((coin, echelle)) = lu else { return };
+    let mut demande = demande;
+    let r = &demande.reglages;
+    let options = animation::Options { onde: r.onde, trainee: r.trainee, echelle: echelle as f32 };
+    let (direct, note_souris) = direct::Direct::lancer(options, coin, r.curseur_agrandi());
+    let pour_moteur = direct.clone();
+    demande.effets = Some(std::sync::Arc::new(move |quand| tenir(&pour_moteur).scene(quand)));
     let lance = Enregistrement::demarrer(demande);
+    let (raccourcis, notes_raccourcis) = if lance.is_ok() { poser_raccourcis_effets(&app) } else { (Vec::new(), Vec::new()) };
     {
         let etat = app.state::<EtatVideo>();
         let mut en_cours = tenir(&etat.en_cours);
@@ -771,10 +867,15 @@ fn decompter_puis_filmer(app: tauri::AppHandle, numero: u64, demande: Demande) {
             (Some(e), Ok((enreg, absentes))) => {
                 e.enreg = Some(enreg);
                 e.absentes = absentes;
+                e.absentes.extend(note_souris);
+                e.absentes.extend(notes_raccourcis);
+                e.direct = Some(direct);
+                e.raccourcis = raccourcis;
             }
             // Abandonne pendant l'ouverture du moteur : rien n'est garde.
             (None, Ok((enreg, _))) => {
                 drop(en_cours);
+                retirer_raccourcis_effets(&app, &raccourcis);
                 enreg.abandonner();
                 return;
             }
@@ -817,9 +918,15 @@ async fn arreter(app: tauri::AppHandle) -> Result<(), String> {
     };
     fermer_barre(&app);
     bulle::fermer(&app);
-    let (sortie, quand, origine) = (en.sortie, en.quand, en.origine);
+    retirer_raccourcis_effets(&app, &en.raccourcis);
+    let (sortie, quand, origine, direct) = (en.sortie, en.quand, en.origine, en.direct);
     let range = hors_thread_principal(app.clone(), move |app| {
+        let horloge = enreg.horloge();
+        let souris = direct.map(|d| tenir(&d).journal());
         let bilan = enreg.arreter()?;
+        if let Some((depart, evenements)) = souris {
+            ecrire_journal(&sortie, &bilan, depart, &evenements, horloge);
+        }
         ranger(&app, bilan, &sortie, &quand, &origine)
     })
     .await;
@@ -832,6 +939,22 @@ async fn arreter(app: tauri::AppHandle) -> Result<(), String> {
         Err(motif) => captures::avertir(&app, &format!("Vidéo enregistrée, mais pas copiée : {motif}")),
     }
     Ok(())
+}
+
+/// Le journal de la souris a cote du MP4 (ADR-022). Rien ne le lit encore : un echec
+/// ne coute pas la video.
+// ponytail: echec d'ecriture tu, a dire quand le montage (voie B) le lira.
+fn ecrire_journal(
+    sortie: &std::path::Path,
+    bilan: &moteur::Bilan,
+    depart: std::time::Instant,
+    evenements: &[animation::Evenement],
+    horloge: impl Fn(std::time::Instant) -> Option<f64>,
+) {
+    let duree = bilan.duree_ms as f64 / 1000.0;
+    let actif = |t: f64| horloge(depart + Duration::from_secs_f64(t)).filter(|&a| a <= duree);
+    let journal = animation::journal(evenements, (bilan.largeur, bilan.hauteur), actif);
+    let _ = std::fs::write(sortie.with_extension("souris.json"), journal.to_string());
 }
 
 /// Vignette, ligne de galerie, puis copie du fichier. La ligne qui ne s'ecrit
@@ -875,6 +998,7 @@ pub async fn video_abandonner(app: tauri::AppHandle) -> Result<(), String> {
     fermer_barre(&app);
     bulle::fermer(&app);
     fermer_selection(&app);
+    retirer_raccourcis_effets(&app, &en.raccourcis);
     hors_thread_principal(app, move |_| {
         enreg.abandonner();
         Ok(())
@@ -1221,7 +1345,7 @@ mod tests {
             quand: chrono::Local::now(),
             origine: Origine::default(),
             absentes: Vec::new(),
-            demande: Some(Demande { ecran: (0, 0), zone: (0, 0, 16, 16), sortie: PathBuf::new(), reglages: Reglages::default() }),
+            demande: Some(Demande { ecran: (0, 0), zone: (0, 0, 16, 16), sortie: PathBuf::new(), reglages: Reglages::default(), effets: None }),
             ecoute: None,
             places: ((0, 0), (0, 0)),
             devant: 0,
@@ -1232,6 +1356,9 @@ mod tests {
             notes_camera: Vec::new(),
             cible,
             notes_scene,
+            direct: None,
+            raccourcis: Vec::new(),
+            raccourcis_lisibles: Default::default(),
         }
     }
 

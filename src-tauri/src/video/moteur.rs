@@ -19,7 +19,7 @@ use image::RgbaImage;
 use wasapi::{DeviceEnumerator, DeviceState, Direction, SampleType, StreamMode, WaveFormat};
 use windows62::Graphics::DirectX::Direct3D11::IDirect3DSurface;
 use windows62::Win32::Graphics::Direct3D11::{
-    ID3D11Texture2D, D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_BOX, D3D11_CPU_ACCESS_READ, D3D11_MAPPED_SUBRESOURCE,
+    ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D, D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_BOX, D3D11_CPU_ACCESS_READ, D3D11_MAPPED_SUBRESOURCE,
     D3D11_MAP_READ, D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING,
 };
 use windows_capture::capture::{CaptureControl, Context, GraphicsCaptureApiHandler};
@@ -34,6 +34,7 @@ use windows_capture::settings::{
 };
 
 use super::bulle::Taille;
+use super::effets::{Compositeur, Scene};
 use super::frise::{crete, debit, en_pcm16, melanger, Frise, Pauses, IPS, TAUX};
 
 type Erreur = Box<dyn std::error::Error + Send + Sync>;
@@ -66,6 +67,11 @@ pub struct Reglages {
     pub camera_taille: Taille,
     pub camera_miroir: bool,
     pub camera_place: Option<(f64, f64)>,
+    /// Les effets (0.22, ADR-022) : l'onde au clic, la trainee bouton gauche tenu, et
+    /// le grossissement du curseur (1 : Windows le dessine ; jusqu'a 3 : le moteur).
+    pub onde: bool,
+    pub trainee: bool,
+    pub curseur_taille: f32,
 }
 
 impl Default for Reglages {
@@ -83,7 +89,18 @@ impl Default for Reglages {
             camera_taille: Taille::Moyenne,
             camera_miroir: true,
             camera_place: None,
+            onde: true,
+            trainee: true,
+            curseur_taille: 1.0,
         }
+    }
+}
+
+impl Reglages {
+    /// Le grossissement du curseur que le moteur dessine ; `None` quand Windows le
+    /// dessine (1x) ou quand il est cache.
+    pub fn curseur_agrandi(&self) -> Option<f32> {
+        (self.curseur && self.curseur_taille > 1.0).then(|| self.curseur_taille.min(3.0))
     }
 }
 
@@ -101,6 +118,21 @@ pub struct Demande {
     pub zone: (u32, u32, u32, u32),
     pub sortie: PathBuf,
     pub reglages: Reglages,
+    /// Les effets (0.22) : la scene a dessiner pour l'image prise a cet instant.
+    /// `None` : la zone filmee part telle quelle, sans passer par Direct2D.
+    pub effets: Option<Effets>,
+}
+
+/// La scene du moment, demandee a chaque image envoyee.
+pub type Effets = Arc<dyn Fn(Instant) -> Scene + Send + Sync>;
+
+/// Direct2D et l'anneau qu'il remplit, sous un seul verrou.
+struct Composition {
+    compositeur: Compositeur,
+    surfaces: Vec<IDirect3DSurface>,
+    textures: Vec<ID3D11Texture2D>,
+    device: ID3D11Device,
+    contexte: ID3D11DeviceContext,
 }
 
 /// Ce qu'un enregistrement fini rend.
@@ -128,6 +160,10 @@ struct Partage {
     niveaux: Mutex<Niveaux>,
     /// Les sources perdues en route (« micro débranché »), a dire dans la barre.
     perdues: Mutex<Vec<String>>,
+    effets: Option<Effets>,
+    /// Direct2D ne s'est pas ouvert : la prise continue sans effets.
+    sans_effets: AtomicBool,
+    composition: Mutex<Option<SendDirectX<Composition>>>,
 }
 
 impl Partage {
@@ -181,6 +217,9 @@ impl Enregistrement {
             erreur: Mutex::new(None),
             niveaux: Mutex::new(Niveaux::default()),
             perdues: Mutex::new(Vec::new()),
+            effets: d.effets.clone(),
+            sans_effets: AtomicBool::new(false),
+            composition: Mutex::new(None),
         });
         let mut enreg = Enregistrement { p: p.clone(), sortie: d.sortie.clone(), controle: None, fils: Vec::new() };
         // Les clients WASAPI restent sur le fil qui les ouvre : il dit lesquels manquent.
@@ -214,7 +253,8 @@ impl Enregistrement {
             }
         }));
         let ecran = ecran_de(d.ecran);
-        let curseur = if d.reglages.curseur { CursorCaptureSettings::WithCursor } else { CursorCaptureSettings::WithoutCursor };
+        // Le curseur agrandi est dessine par le moteur : Windows filme sans le sien.
+        let curseur = if d.reglages.curseur && d.reglages.curseur_agrandi().is_none() { CursorCaptureSettings::WithCursor } else { CursorCaptureSettings::WithoutCursor };
         let reglages = |bordure| {
             Settings::new(
                 ecran,
@@ -254,6 +294,14 @@ impl Enregistrement {
 
     pub fn en_pause(&self) -> bool {
         tenir(&self.p.pauses).en_pause()
+    }
+
+    /// Le temps de video d'un instant : `None` avant la premiere image ou pendant
+    /// une pause. Figee a l'appel : a prendre juste avant `arreter`.
+    pub fn horloge(&self) -> impl Fn(Instant) -> Option<f64> + Send + 'static {
+        let t0 = self.p.t0.get().copied();
+        let pauses = tenir(&self.p.pauses).clone();
+        move |quand| pauses.actif(quand.checked_duration_since(t0?)?.as_secs_f64())
     }
 
     /// Le temps deja filme, pauses retirees.
@@ -382,23 +430,63 @@ impl Capteur {
         if self.anneau.is_empty() {
             self.anneau = anneau(frame, l, h)?;
         }
+        let boite = D3D11_BOX { left: x, top: y, front: 0, right: x + l, bottom: y + h, back: 1 };
+        if self.p.effets.is_some() && !self.p.sans_effets.load(Ordering::Relaxed) && self.recevoir_pour_composer(frame, &boite, l, h)? {
+            return Ok(());
+        }
         let i = self.indice % self.anneau.len();
         self.indice += 1;
-        let boite = D3D11_BOX { left: x, top: y, front: 0, right: x + l, bottom: y + h, back: 1 };
         unsafe {
             frame.device_context().CopySubresourceRegion(&self.anneau[i].0 .0, 0, 0, 0, 0, frame.as_raw_texture(), 0, Some(&raw const boite));
             frame.device_context().Flush();
         }
         if self.indice == 1 {
-            *tenir(&self.p.premiere) = lire_texture(frame, &self.anneau[i].0 .0, l, h).ok();
+            *tenir(&self.p.premiere) = lire_texture(frame.device(), frame.device_context(), &self.anneau[i].0 .0, l, h).ok();
         }
         *tenir(&self.p.surface) = Some(SendDirectX::new(self.anneau[i].0 .1.clone()));
-        // Le depart de la frise : la premiere image copiee.
+        self.partir();
+        Ok(())
+    }
+
+    /// Le depart de la frise : la premiere image copiee.
+    fn partir(&self) {
         self.p.t0.get_or_init(|| {
             let _ = self.p.t0_qpc.set(qpc_100ns());
             Instant::now()
         });
-        Ok(())
+    }
+
+    /// Avec effets : la zone va dans la texture brute, le fil des images compose.
+    /// Faux si Direct2D ne s'ouvre pas : la prise passe sans effets, et le dit.
+    fn recevoir_pour_composer(&mut self, frame: &mut Frame, boite: &D3D11_BOX, l: u32, h: u32) -> Result<bool, Erreur> {
+        let mut composition = tenir(&self.p.composition);
+        if composition.is_none() {
+            let brute = anneau(frame, l, h)?.into_iter().next().ok_or("texture brute non créée")?.0 .0;
+            let textures: Vec<ID3D11Texture2D> = self.anneau.iter().map(|t| t.0 .0.clone()).collect();
+            let compositeur = match Compositeur::new(frame.device(), brute, &textures, l, h) {
+                Ok(c) => c,
+                Err(e) => {
+                    tenir(&self.p.perdues).push(format!("sans effets ({e})"));
+                    self.p.sans_effets.store(true, Ordering::Relaxed);
+                    return Ok(false);
+                }
+            };
+            *composition = Some(SendDirectX::new(Composition {
+                compositeur,
+                surfaces: self.anneau.iter().map(|t| t.0 .1.clone()).collect(),
+                textures,
+                device: frame.device().clone(),
+                contexte: frame.device_context().clone(),
+            }));
+        }
+        let c = &composition.as_ref().ok_or("composition absente")?.0;
+        unsafe {
+            c.contexte.CopySubresourceRegion(c.compositeur.brute(), 0, 0, 0, 0, frame.as_raw_texture(), 0, Some(boite));
+            c.contexte.Flush();
+        }
+        drop(composition);
+        self.partir();
+        Ok(true)
     }
 }
 
@@ -429,10 +517,9 @@ fn anneau(frame: &Frame, l: u32, h: u32) -> Result<Vec<SendDirectX<(ID3D11Textur
 
 /// La texture `t` (BGRA, `l` x `h`) lue par le processeur, une seule fois :
 /// la vignette de la video.
-fn lire_texture(frame: &Frame, t: &ID3D11Texture2D, l: u32, h: u32) -> Result<RgbaImage, Erreur> {
-    let mut d = *frame.desc();
-    d.Width = l;
-    d.Height = h;
+fn lire_texture(device: &ID3D11Device, contexte: &ID3D11DeviceContext, t: &ID3D11Texture2D, l: u32, h: u32) -> Result<RgbaImage, Erreur> {
+    let mut d = Default::default();
+    unsafe { t.GetDesc(&mut d) };
     d.Usage = D3D11_USAGE_STAGING;
     d.BindFlags = 0;
     d.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
@@ -440,9 +527,8 @@ fn lire_texture(frame: &Frame, t: &ID3D11Texture2D, l: u32, h: u32) -> Result<Rg
     d.MipLevels = 1;
     d.ArraySize = 1;
     let mut copie = None;
-    unsafe { frame.device().CreateTexture2D(&d, None, Some(&mut copie))? };
+    unsafe { device.CreateTexture2D(&d, None, Some(&mut copie))? };
     let copie = copie.ok_or("texture de lecture non créée")?;
-    let contexte = frame.device_context();
     let mut lue = D3D11_MAPPED_SUBRESOURCE::default();
     unsafe {
         contexte.CopyResource(&copie, t);
@@ -460,6 +546,20 @@ fn lire_texture(frame: &Frame, t: &ID3D11Texture2D, l: u32, h: u32) -> Result<Rg
     Ok(image)
 }
 
+/// L'image `k` composee dans l'anneau ; la premiere est aussi lue pour la vignette.
+fn composer(p: &Partage, k: u64, scene: &Scene) -> Result<IDirect3DSurface, Erreur> {
+    let mut composition = tenir(&p.composition);
+    let c = &mut composition.as_mut().ok_or("aucune image copiée")?.0;
+    let i = (k as usize) % c.surfaces.len();
+    c.compositeur.dessiner(i, scene)?;
+    unsafe { c.contexte.Flush() };
+    if k == 0 {
+        let (_, _, l, h) = p.zone;
+        *tenir(&p.premiere) = lire_texture(&c.device, &c.contexte, &c.textures[i], l, h).ok();
+    }
+    Ok(c.surfaces[i].clone())
+}
+
 /// Une image toutes les 1/30 s de temps actif : la derniere copiee, avec son
 /// horodatage calcule. La pause arrete le temps actif, donc les envois.
 fn boucle_images(p: &Partage) -> Result<(), Erreur> {
@@ -474,17 +574,21 @@ fn boucle_images(p: &Partage) -> Result<(), Erreur> {
     };
     for k in 0u64.. {
         let actif = k as f64 / IPS as f64;
-        loop {
+        let mur = loop {
             if p.fini() || tenir(&p.fin).is_some_and(|fin| actif >= fin) {
                 return Ok(());
             }
             let pauses = tenir(&p.pauses).clone();
-            if !pauses.en_pause() && t0.elapsed().as_secs_f64() >= pauses.mur_de(actif) {
-                break;
+            let mur = pauses.mur_de(actif);
+            if !pauses.en_pause() && t0.elapsed().as_secs_f64() >= mur {
+                break mur;
             }
             thread::sleep(Duration::from_millis(2));
-        }
-        let surface = tenir(&p.surface).as_ref().map(|s| s.0.clone()).ok_or("aucune image copiée")?;
+        };
+        let surface = match &p.effets {
+            Some(effets) if !p.sans_effets.load(Ordering::Relaxed) => composer(p, k, &effets(t0 + Duration::from_secs_f64(mur)))?,
+            _ => tenir(&p.surface).as_ref().map(|s| s.0.clone()).ok_or("aucune image copiée")?,
+        };
         if let Some(encodeur) = tenir(&p.encodeur).as_mut() {
             encodeur.send_directx_surface_at(&surface, k as i64 * 10_000_000 / IPS as i64)?;
         }
@@ -750,6 +854,202 @@ mod tests {
         Ok(())
     }
 
+    /// Le chemin de l'application (etape e2e 32) : `Direct::lancer` puis une zone
+    /// decalee de 440 x 320 en (340, 340), onde et trainee, curseur 1x. Rouge le
+    /// 16 octobre 2026 dans le parcours (MP4 vide, phase `filme` jamais vue).
+    #[test]
+    #[ignore = "ecran reel"]
+    fn video_reelle_chemin_de_l_app() {
+        let dossier = std::env::temp_dir().join(format!("equishot-chemin-essai-{}", std::process::id()));
+        std::fs::create_dir_all(&dossier).expect("dossier");
+        let sortie = dossier.join("chemin.mp4");
+        let reglages = Reglages { micro: false, son_systeme: false, curseur: true, onde: true, trainee: true, curseur_taille: 1.0, ..Reglages::default() };
+        let options = super::super::animation::Options { onde: true, trainee: true, echelle: 1.0 };
+        let debut = Instant::now();
+        let (direct, note) = super::super::direct::Direct::lancer(options, (340, 340), reglages.curseur_agrandi());
+        println!("Direct::lancer {} ms, note {note:?}", debut.elapsed().as_millis());
+        let pour_moteur = direct.clone();
+        let effets: Effets = Arc::new(move |quand| tenir(&pour_moteur).scene(quand));
+        let demande = Demande { ecran: (0, 0), zone: (340, 340, 440, 320), sortie: sortie.clone(), reglages, effets: Some(effets) };
+        let debut = Instant::now();
+        let (enreg, absentes) = Enregistrement::demarrer(demande).expect("demarre");
+        println!("demarrer {} ms, absentes {absentes:?}", debut.elapsed().as_millis());
+        for _ in 0..30 {
+            thread::sleep(Duration::from_millis(100));
+            if let Some(e) = enreg.erreur() {
+                panic!("erreur du moteur apres {} ms : {e}", debut.elapsed().as_millis());
+            }
+        }
+        println!("perdues {:?}, actif {} ms", enreg.perdues(), enreg.actif_ms());
+        let bilan = enreg.arreter().expect("arrete");
+        let r = super::super::lecture::relever(&sortie).expect("relu");
+        println!("bilan {} ms, releve {r:?}", bilan.duree_ms);
+        let _ = std::fs::remove_dir_all(&dossier);
+        assert!(bilan.duree_ms > 2500, "duree {}", bilan.duree_ms);
+    }
+
+    /// Le curseur agrandi (0.22) : la fleche de Windows (12 x 19 px opaques a 1x) dessinee
+    /// 3x en (100, 100). Dans le MP4, les lignes 125 a 155, qu'une fleche 1x n'atteint
+    /// pas, changent nettement par rapport a la reference.
+    #[test]
+    #[ignore = "ecran reel"]
+    fn video_reelle_curseur_agrandi() {
+        use super::super::effets::CurseurVu;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{LoadCursorW, IDC_ARROW};
+        // SAFETY: curseur systeme partage, jamais libere.
+        let fleche = unsafe { LoadCursorW(std::ptr::null_mut(), IDC_ARROW) } as isize;
+        let dossier = std::env::temp_dir().join(format!("equishot-curseur-essai-{}", std::process::id()));
+        std::fs::create_dir_all(&dossier).expect("dossier");
+        let sortie = dossier.join("curseur.mp4");
+        let effets: Effets = Arc::new(move |_| Scene {
+            zoom: (320.0, 180.0, 1.0),
+            ondes: Vec::new(),
+            segments: Vec::new(),
+            projecteur: None,
+            curseur: Some(CurseurVu { poignee: fleche, x: 100.0, y: 100.0, taille: 3.0 }),
+        });
+        let reference = xcap::Monitor::all().expect("ecrans").into_iter().find(|m| m.is_primary().unwrap_or(false)).expect("principal").capture_region(0, 0, 640, 360).expect("reference");
+        let reglages = Reglages { micro: false, son_systeme: false, curseur_taille: 3.0, ..Reglages::default() };
+        let demande = Demande { ecran: (0, 0), zone: (0, 0, 640, 360), sortie: sortie.clone(), reglages, effets: Some(effets) };
+        let (enreg, _) = Enregistrement::demarrer(demande).expect("demarre");
+        thread::sleep(Duration::from_secs(2));
+        enreg.arreter().expect("arrete");
+        let mut lue = None;
+        super::super::lecture::images(&sortie, 10.0, 0.5, |i| lue = lue.take().or(Some(i))).expect("relue");
+        let lue = lue.expect("une image");
+        let change = |x: u32, y: u32| {
+            let (a, b) = (lue.get_pixel(x, y), reference.get_pixel(x, y));
+            (0..3).map(|c| (a[c] as i32 - b[c] as i32).abs()).max().unwrap_or(0) > 60
+        };
+        let au_dela = (125..155).flat_map(|y| (100..140).map(move |x| (x, y))).filter(|&(x, y)| change(x, y)).count();
+        let ailleurs = (200..296).flat_map(|y| (300..396).map(move |x| (x, y))).filter(|&(x, y)| change(x, y)).count();
+        // La boite temoin dit seulement si le bureau a bouge pendant l'essai.
+        println!("pixels changes : {au_dela} au-dela de la fleche 1x, {ailleurs} dans une boite temoin");
+        if std::env::var_os("EQUISHOT_GARDER").is_none() {
+            let _ = std::fs::remove_dir_all(&dossier);
+        } else {
+            lue.save(dossier.join("image.png")).expect("png");
+        }
+        assert!(au_dela > 250, "la fleche n'est pas agrandie : {au_dela}");
+    }
+
+    /// Le cout des effets en plein ecran principal : temps processeur du processus
+    /// pendant 5 s, sans effets puis avec zoom, onde et projecteur (a lire, pas de seuil).
+    #[test]
+    #[ignore = "ecran reel, mesure"]
+    fn cout_des_effets_plein_ecran() {
+        use super::super::effets::{Couleur, Onde, Projecteur};
+        use windows_sys::Win32::Foundation::FILETIME;
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+        let cpu = || {
+            let z = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+            let (mut a, mut b, mut k, mut u) = (z, z, z, z);
+            unsafe { GetProcessTimes(GetCurrentProcess(), &mut a, &mut b, &mut k, &mut u) };
+            let t = |f: FILETIME| ((f.dwHighDateTime as u64) << 32 | f.dwLowDateTime as u64) as f64 / 1e7;
+            t(k) + t(u)
+        };
+        let m = xcap::Monitor::all().expect("ecrans").into_iter().find(|m| m.is_primary().unwrap_or(false)).expect("principal");
+        let (l, h) = (m.width().expect("l") & !1, m.height().expect("h") & !1);
+        let dossier = std::env::temp_dir().join(format!("equishot-cout-{}", std::process::id()));
+        for avec in [false, true] {
+            let effets: Option<Effets> = avec.then(|| {
+                let debut = Instant::now();
+                Arc::new(move |quand: Instant| {
+                    let t = quand.saturating_duration_since(debut).as_secs_f32();
+                    Scene {
+                    zoom: (l as f32 / 2.0, h as f32 / 2.0, 1.5 + t.sin() * 0.5),
+                    ondes: vec![Onde { x: 400.0, y: 300.0, rayon: 20.0 + (t * 60.0) % 40.0, epaisseur: 3.0, opacite: 0.8, couleur: Couleur(1.0, 0.8, 0.0) }],
+                    segments: Vec::new(),
+                    projecteur: Some(Projecteur { x: 400.0, y: 300.0, rayon: 200.0, opacite: 0.6 }),
+                    curseur: None,
+                }}) as Effets
+            });
+            let demande = Demande { ecran: (0, 0), zone: (0, 0, l, h), sortie: dossier.join(format!("cout-{avec}.mp4")), reglages: Reglages { micro: false, son_systeme: false, ..Reglages::default() }, effets };
+            let (enreg, _) = Enregistrement::demarrer(demande).expect("demarre");
+            thread::sleep(Duration::from_secs(1));
+            let (c0, t0) = (cpu(), Instant::now());
+            thread::sleep(Duration::from_secs(5));
+            let part = (cpu() - c0) / t0.elapsed().as_secs_f64() * 100.0;
+            enreg.arreter().expect("arrete");
+            println!("{l} x {h}, effets {avec} : {part:.1} % d'un coeur");
+        }
+        let _ = std::fs::remove_dir_all(&dossier);
+    }
+
+    /// Les effets (0.22) sur le vrai ecran : zoom 2x sur (160, 90), une onde au
+    /// centre de l'image, un projecteur. L'image relue du MP4 doit porter l'onde et
+    /// le zoom ; l'image d'origine est prise par xcap au meme moment.
+    #[test]
+    #[ignore = "ecran reel"]
+    fn video_reelle_avec_effets() {
+        use super::super::effets::{Couleur, Onde, Projecteur};
+        let dossier = std::env::temp_dir().join(format!("equishot-effets-essai-{}", std::process::id()));
+        std::fs::create_dir_all(&dossier).expect("dossier");
+        let sortie = dossier.join("effets.mp4");
+        let appels = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let compte = appels.clone();
+        let effets: Effets = Arc::new(move |_t| {
+            compte.fetch_add(1, Ordering::Relaxed);
+            Scene {
+                zoom: (160.0, 90.0, 2.0),
+                ondes: vec![Onde { x: 160.0, y: 90.0, rayon: 20.0, epaisseur: 3.0, opacite: 1.0, couleur: Couleur(1.0, 0.0, 1.0) }],
+                segments: Vec::new(),
+                projecteur: Some(Projecteur { x: 160.0, y: 90.0, rayon: 60.0, opacite: 0.6 }),
+                curseur: None,
+            }
+        });
+        let reference = xcap::Monitor::all().expect("ecrans").into_iter().find(|m| m.is_primary().unwrap_or(false)).expect("principal").capture_region(0, 0, 640, 360).expect("reference");
+        let demande = Demande { ecran: (0, 0), zone: (0, 0, 640, 360), sortie: sortie.clone(), reglages: Reglages { micro: false, son_systeme: false, ..Reglages::default() }, effets: Some(effets) };
+        let (enreg, _) = Enregistrement::demarrer(demande).expect("demarre");
+        thread::sleep(Duration::from_secs(3));
+        let bilan = enreg.arreter().expect("arrete");
+        let r = super::super::lecture::relever(&sortie).expect("relu");
+        println!("bilan {} ms, releve {r:?}, scenes demandees {}", bilan.duree_ms, appels.load(Ordering::Relaxed));
+        assert!((r.image_s - 3.0).abs() <= 0.1 && r.trou_image_ms <= 40.0, "image {} trou {}", r.image_s, r.trou_image_ms);
+        // Une scene par image envoyee, ecran immobile compris : 90 a 3 s.
+        assert!((88..=92).contains(&appels.load(Ordering::Relaxed)), "scenes {}", appels.load(Ordering::Relaxed));
+        let mut lue = None;
+        super::super::lecture::images(&sortie, 10.0, 0.5, |i| lue = lue.take().or(Some(i))).expect("relue");
+        let lue = lue.expect("une image");
+        lue.save(dossier.join("image.png")).expect("png");
+        reference.save(dossier.join("reference.png")).expect("png");
+        // L'onde : rayon 20 x 2 = 40 px autour du centre (320, 180), magenta.
+        let p = lue.get_pixel(320 + 40, 180);
+        println!("onde {:?}", p);
+        assert!(p[0] > 180 && p[1] < 90 && p[2] > 180, "onde absente : {p:?}");
+        // Le zoom : le centre de l'image montre le point (160, 90) de la zone ; le
+        // carre de 30 px autour (dans le disque eclaire) doit ressembler a la
+        // reference agrandie 2x, bien plus qu'a la reference sans zoom.
+        // Ecart moyen du carre de 30 px au centre de l'image avec la reference lue par `ref_xy`.
+        let ecart = |ref_xy: &dyn Fn(u32, u32) -> (u32, u32)| {
+            let mut s = 0.0;
+            for y in 0..30 {
+                for x in 0..30 {
+                    let a = lue.get_pixel(305 + x, 165 + y);
+                    let (rx, ry) = ref_xy(305 + x, 165 + y);
+                    let b = reference.get_pixel(rx, ry);
+                    s += (0..3).map(|c| (a[c] as f64 - b[c] as f64).abs()).sum::<f64>() / 3.0;
+                }
+            }
+            s / 900.0
+        };
+        // Le point (X, Y) de l'image montre le point (160 + (X - 320) / 2, 90 + (Y - 180) / 2) de la zone.
+        let zoome = ecart(&|x, y| (160 + x / 2 - 160, 90 + y / 2 - 90));
+        let a_plat = ecart(&|x, y| (x, y));
+        println!("zoom : ecart {zoome:.1} contre {a_plat:.1} sans zoom");
+        assert!(zoome < 10.0 && zoome < a_plat, "le centre ne montre pas la zone zoomee : {zoome:.1} contre {a_plat:.1}");
+        // Le projecteur : le coin (20, 20) de l'image montre (10, 10) de la zone, assombri a 40 %.
+        let (c, rc) = (lue.get_pixel(20, 20), reference.get_pixel(10, 10));
+        let lum = |p: &image::Rgba<u8>| (p[0] as f64 + p[1] as f64 + p[2] as f64) / 3.0;
+        println!("coin {:?} reference {:?}", c, rc);
+        assert!((lum(c) - 0.4 * lum(rc)).abs() < 15.0, "coin {} attendu {}", lum(c), 0.4 * lum(rc));
+        if std::env::var_os("EQUISHOT_GARDER").is_none() {
+            let _ = std::fs::remove_dir_all(&dossier);
+        } else {
+            println!("garde dans {}", dossier.display());
+        }
+    }
+
     /// Essai reel, a la main : `cargo test --lib video_reelle -- --ignored --nocapture`,
     /// quand l'ordinateur ne joue rien d'autre : la boucle prend tout le son de la
     /// machine, et une video ouverte dans un navigateur ajoute des bips (vu le 7 octobre 2026).
@@ -761,7 +1061,7 @@ mod tests {
         let dossier = std::env::temp_dir().join(format!("equishot-video-essai-{}", std::process::id()));
         std::fs::create_dir_all(&dossier).expect("dossier");
         let sortie = dossier.join("essai.mp4");
-        let demande = Demande { ecran: (0, 0), zone: (0, 0, 640, 360), sortie: sortie.clone(), reglages: Reglages { micro: false, son_systeme: true, ..Reglages::default() } };
+        let demande = Demande { ecran: (0, 0), zone: (0, 0, 640, 360), sortie: sortie.clone(), reglages: Reglages { micro: false, son_systeme: true, ..Reglages::default() }, effets: None };
         let (enreg, absentes) = Enregistrement::demarrer(demande).expect("demarre");
         assert!(absentes.is_empty(), "{absentes:?}");
         let debut = Instant::now();

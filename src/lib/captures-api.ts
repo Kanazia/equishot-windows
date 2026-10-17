@@ -303,6 +303,10 @@ export interface EtatBarre {
   cameras: Camera[];
   /** Mise en scène : ce qui est filmé (0.19). */
   cible: CibleScene | null;
+  /** Le zoom et le projecteur allumés (0.22), et leurs raccourcis lisibles. */
+  zoom: boolean;
+  projecteur: boolean;
+  raccourcisEffets: [string, string];
 }
 
 /** La bulle de caméra (0.18) : 160, 240 ou 360 pixels CSS de diamètre. */
@@ -338,6 +342,10 @@ export interface ReglagesVideo {
   cameraMiroir: boolean;
   /** Proportion de l'espace libre de la zone (0 à 1) ; `null` : en bas à gauche. Écrite par le seul glisser. */
   cameraPlace: [number, number] | null;
+  /** Les effets (0.22) : onde au clic, traînée bouton gauche tenu, curseur grossi de 1 à 3. */
+  onde: boolean;
+  trainee: boolean;
+  curseurTaille: number;
 }
 
 /** L'écran d'une scène (0.19) : nom Windows (`\\.\DISPLAY1`), coin et taille en pixels physiques. */
@@ -350,7 +358,7 @@ export interface EcranScene {
 /** Ce que filme une scène : une zone à tracer, un écran entier, ou une zone fixe (pixels physiques, relative à l'écran). */
 export type CibleScene = { genre: "aTracer" } | { genre: "ecran"; ecran: EcranScene } | { genre: "zone"; ecran: EcranScene; zone: [number, number, number, number] };
 
-/** Ce qu'une scène remet dans les réglages : le son et la bulle, pas le curseur. */
+/** Ce qu'une scène remet dans les réglages : le son, la bulle et les effets, pas le curseur visible. */
 export type MiseScene = Omit<ReglagesVideo, "curseur">;
 
 export interface Scene {
@@ -394,6 +402,8 @@ export const videoPeripheriques = () => invoke<Peripheriques>("video_peripheriqu
 export const videoArreter = () => invoke<void>("video_arreter");
 export const videoAbandonner = () => invoke<void>("video_abandonner");
 export const videoPauser = (pause: boolean) => invoke<void>("video_pauser", { pause });
+/** Les boutons de la barre (0.22) : bascule le zoom (`true`) ou le projecteur. */
+export const videoEffet = (zoom: boolean) => invoke<void>("video_effet", { zoom });
 export const videoEtat = () => invoke<EtatBarre>("video_etat");
 export const videoReglages = () => invoke<ReglagesVideo>("video_reglages");
 export const videoRegler = (reglages: ReglagesVideo) => invoke<ReglagesVideo>("video_regler", { reglages });
