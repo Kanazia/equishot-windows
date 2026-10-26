@@ -72,6 +72,11 @@ pub struct Reglages {
     pub onde: bool,
     pub trainee: bool,
     pub curseur_taille: f32,
+    /// Le lot 2 et le lot 3 (0.23, ADR-023) : les touches montrees, le zoom qui vient
+    /// seul au clic, le curseur dessine par le moteur avec douceur.
+    pub touches: super::animation::ModeTouches,
+    pub zoom_auto: bool,
+    pub curseur_lisse: bool,
 }
 
 impl Default for Reglages {
@@ -92,15 +97,19 @@ impl Default for Reglages {
             onde: true,
             trainee: true,
             curseur_taille: 1.0,
+            touches: super::animation::ModeTouches::Raccourcis,
+            zoom_auto: false,
+            curseur_lisse: false,
         }
     }
 }
 
 impl Reglages {
     /// Le grossissement du curseur que le moteur dessine ; `None` quand Windows le
-    /// dessine (1x) ou quand il est cache.
+    /// dessine (1x sans lissage) ou quand il est cache. Le curseur lisse est
+    /// toujours dessine par le moteur, meme a 1x.
     pub fn curseur_agrandi(&self) -> Option<f32> {
-        (self.curseur && self.curseur_taille > 1.0).then(|| self.curseur_taille.min(3.0))
+        (self.curseur && (self.curseur_taille > 1.0 || self.curseur_lisse)).then(|| self.curseur_taille.clamp(1.0, 3.0))
     }
 }
 
@@ -864,9 +873,9 @@ mod tests {
         std::fs::create_dir_all(&dossier).expect("dossier");
         let sortie = dossier.join("chemin.mp4");
         let reglages = Reglages { micro: false, son_systeme: false, curseur: true, onde: true, trainee: true, curseur_taille: 1.0, ..Reglages::default() };
-        let options = super::super::animation::Options { onde: true, trainee: true, echelle: 1.0 };
+        let options = super::super::animation::Options { onde: true, trainee: true, echelle: 1.0, zoom_auto: false, touches: Default::default() };
         let debut = Instant::now();
-        let (direct, note) = super::super::direct::Direct::lancer(options, (340, 340), reglages.curseur_agrandi());
+        let (direct, note) = super::super::direct::Direct::lancer(options, (340, 340), reglages.curseur_agrandi(), false);
         println!("Direct::lancer {} ms, note {note:?}", debut.elapsed().as_millis());
         let pour_moteur = direct.clone();
         let effets: Effets = Arc::new(move |quand| tenir(&pour_moteur).scene(quand));
@@ -907,6 +916,8 @@ mod tests {
             segments: Vec::new(),
             projecteur: None,
             curseur: Some(CurseurVu { poignee: fleche, x: 100.0, y: 100.0, taille: 3.0 }),
+            traits: Vec::new(),
+            touches: None,
         });
         let reference = xcap::Monitor::all().expect("ecrans").into_iter().find(|m| m.is_primary().unwrap_or(false)).expect("principal").capture_region(0, 0, 640, 360).expect("reference");
         let reglages = Reglages { micro: false, son_systeme: false, curseur_taille: 3.0, ..Reglages::default() };
@@ -962,6 +973,8 @@ mod tests {
                     segments: Vec::new(),
                     projecteur: Some(Projecteur { x: 400.0, y: 300.0, rayon: 200.0, opacite: 0.6 }),
                     curseur: None,
+                    traits: Vec::new(),
+                    touches: None,
                 }}) as Effets
             });
             let demande = Demande { ecran: (0, 0), zone: (0, 0, l, h), sortie: dossier.join(format!("cout-{avec}.mp4")), reglages: Reglages { micro: false, son_systeme: false, ..Reglages::default() }, effets };
@@ -996,6 +1009,8 @@ mod tests {
                 segments: Vec::new(),
                 projecteur: Some(Projecteur { x: 160.0, y: 90.0, rayon: 60.0, opacite: 0.6 }),
                 curseur: None,
+                traits: Vec::new(),
+                touches: None,
             }
         });
         let reference = xcap::Monitor::all().expect("ecrans").into_iter().find(|m| m.is_primary().unwrap_or(false)).expect("principal").capture_region(0, 0, 640, 360).expect("reference");

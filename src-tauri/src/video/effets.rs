@@ -1,7 +1,8 @@
 //! Les effets de presentation (lot 1, 0.22) : chaque image filmee est recomposee
 //! sur la carte par Direct2D avant l'encodage, avec le zoom, les ondes des clics,
 //! la trainee et le projecteur dessines dedans. Rien n'est pose a l'ecran : la
-//! video seule les porte, prete a l'arret.
+//! video seule les porte, prete a l'arret. Le lot 2 (0.23, ADR-023) y ajoute les
+//! touches frappees, en bas de l'image, et les traits dessines pendant la prise.
 //!
 //! Le moteur copie la zone filmee dans `brute` ; a chaque image envoyee (30 i/s,
 //! meme ecran immobile), `dessiner` compose `brute` et la scene du moment dans une
@@ -17,7 +18,12 @@ use windows62::Win32::Graphics::Direct2D::{
     D2D1CreateFactory, ID2D1Bitmap1, ID2D1DeviceContext, ID2D1Factory, ID2D1Factory1, ID2D1SolidColorBrush, ID2D1StrokeStyle, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
     D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1, D2D1_BUFFER_PRECISION_8BPC_UNORM,
     D2D1_CAP_STYLE_ROUND, D2D1_COLOR_SPACE_SRGB, D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_ELLIPSE, D2D1_EXTEND_MODE_CLAMP, D2D1_FACTORY_TYPE_MULTI_THREADED,
-    D2D1_INTERPOLATION_MODE_LINEAR, D2D1_LINE_JOIN_ROUND, D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES, D2D1_STROKE_STYLE_PROPERTIES,
+    D2D1_INTERPOLATION_MODE_LINEAR, D2D1_LINE_JOIN_ROUND, D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES, D2D1_STROKE_STYLE_PROPERTIES, D2D1_DRAW_TEXT_OPTIONS_NONE,
+    D2D1_ROUNDED_RECT,
+};
+use windows62::Win32::Graphics::DirectWrite::{
+    DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat, DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+    DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_METRICS,
 };
 use windows62::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11Multithread, ID3D11Texture2D};
 use windows62::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -70,6 +76,35 @@ pub struct CurseurVu {
     pub taille: f32,
 }
 
+/// L'outil d'un trait dessine pendant la prise (0.23).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Outil {
+    Stylo,
+    Fleche,
+    Rectangle,
+}
+
+/// Un trait dessine pendant la prise, envoye par la page du dessin : ses points en
+/// pixels de la zone filmee (le stylo en a autant qu'il veut, la fleche et le
+/// rectangle deux : depart et arrivee).
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+pub struct Trait {
+    pub outil: Outil,
+    pub couleur: (f32, f32, f32),
+    pub epaisseur: f32,
+    pub points: Vec<(f32, f32)>,
+}
+
+/// Les touches frappees, en bas de l'image (0.23).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Touches {
+    pub texte: String,
+    pub opacite: f32,
+    /// La taille du texte, en pixels de l'image.
+    pub taille: f32,
+}
+
 /// Ce qu'il faut dessiner dans une image, en pixels de la zone filmee.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Scene {
@@ -79,6 +114,16 @@ pub struct Scene {
     pub segments: Vec<Segment>,
     pub projecteur: Option<Projecteur>,
     pub curseur: Option<CurseurVu>,
+    pub traits: Vec<Trait>,
+    /// Hors du zoom : toujours en bas de l'image.
+    pub touches: Option<Touches>,
+}
+
+/// Les deux branches de la tete d'une fleche qui va de `de` a `a`.
+pub fn tete_de_fleche(de: (f32, f32), a: (f32, f32), longueur: f32) -> [(f32, f32); 2] {
+    let angle = (a.1 - de.1).atan2(a.0 - de.0);
+    let ouverture = 28f32.to_radians();
+    [angle + std::f32::consts::PI - ouverture, angle + std::f32::consts::PI + ouverture].map(|t| (a.0 + longueur * t.cos(), a.1 + longueur * t.sin()))
 }
 
 /// La transformation de la zone vers l'image pour un zoom `(cx, cy, f)` : le centre
@@ -109,6 +154,9 @@ pub struct Compositeur {
     rond: ID2D1StrokeStyle,
     /// Les curseurs deja lus : bitmap, taille et point chaud ; `None` si illisible.
     curseurs: HashMap<isize, Option<(ID2D1Bitmap1, (f32, f32), (f32, f32))>>,
+    ecriture: IDWriteFactory,
+    /// Le format du texte des touches et sa taille ; refait si la taille change.
+    format: Option<(f32, IDWriteTextFormat)>,
     l: u32,
     h: u32,
 }
@@ -142,7 +190,8 @@ impl Compositeur {
                 None,
             )?;
             ctx.SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-            Ok(Compositeur { ctx, brute, source, cibles, pinceau, rond, curseurs: HashMap::new(), l, h })
+            let ecriture: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
+            Ok(Compositeur { ctx, brute, source, cibles, pinceau, rond, curseurs: HashMap::new(), ecriture, format: None, l, h })
         }
     }
 
@@ -154,6 +203,10 @@ impl Compositeur {
     /// Compose `brute` et `scene` dans la texture `i` de l'anneau.
     pub fn dessiner(&mut self, i: usize, scene: &Scene) -> Result<(), Erreur> {
         let curseur = scene.curseur.and_then(|c| self.curseur(c.poignee).map(|b| (c, b)));
+        let format = match &scene.touches {
+            Some(t) if t.opacite > 0.0 && !t.texte.is_empty() => self.format(t.taille),
+            _ => None,
+        };
         let (l, h) = (self.l as f32, self.h as f32);
         let ctx = &self.ctx;
         unsafe {
@@ -181,6 +234,30 @@ impl Compositeur {
                 self.pinceau.SetColor(&couleur(s.couleur, s.opacite));
                 ctx.DrawLine(v(s.de), v(s.a), &self.pinceau, s.epaisseur, &self.rond);
             }
+            for t in &scene.traits {
+                let (r, g, b) = t.couleur;
+                self.pinceau.SetColor(&couleur(Couleur(r, g, b), 1.0));
+                match (t.outil, t.points.as_slice()) {
+                    (_, []) => {}
+                    (Outil::Stylo, [p]) => ctx.DrawLine(v(*p), v(*p), &self.pinceau, t.epaisseur, &self.rond),
+                    (Outil::Stylo, points) => {
+                        for paire in points.windows(2) {
+                            ctx.DrawLine(v(paire[0]), v(paire[1]), &self.pinceau, t.epaisseur, &self.rond);
+                        }
+                    }
+                    (_, [_]) => {}
+                    (Outil::Rectangle, [de, .., a]) => {
+                        let rect = D2D_RECT_F { left: de.0.min(a.0), top: de.1.min(a.1), right: de.0.max(a.0), bottom: de.1.max(a.1) };
+                        ctx.DrawRectangle(&rect, &self.pinceau, t.epaisseur, &self.rond);
+                    }
+                    (Outil::Fleche, [de, .., a]) => {
+                        ctx.DrawLine(v(*de), v(*a), &self.pinceau, t.epaisseur, &self.rond);
+                        for bout in tete_de_fleche(*de, *a, t.epaisseur * 4.0) {
+                            ctx.DrawLine(v(*a), v(bout), &self.pinceau, t.epaisseur, &self.rond);
+                        }
+                    }
+                }
+            }
             for o in &scene.ondes {
                 self.pinceau.SetColor(&couleur(o.couleur, o.opacite));
                 ctx.DrawEllipse(&D2D1_ELLIPSE { point: v((o.x, o.y)), radiusX: o.rayon, radiusY: o.rayon }, &self.pinceau, o.epaisseur, None);
@@ -190,10 +267,50 @@ impl Compositeur {
                 let place = D2D_RECT_F { left: x, top: y, right: x + bl * c.taille, bottom: y + bh * c.taille };
                 ctx.DrawBitmap(bitmap, Some(&place), 1.0, D2D1_INTERPOLATION_MODE_LINEAR, None, None);
             }
+            if let (Some(t), Some(format)) = (&scene.touches, &format) {
+                // Hors du zoom : la pastille reste en bas, au milieu de l'image.
+                ctx.SetTransform(&Matrix3x2::identity());
+                let texte: Vec<u16> = t.texte.encode_utf16().collect();
+                let mise = self.ecriture.CreateTextLayout(&texte, format, l * 0.9, t.taille * 2.0)?;
+                let mut mesure = DWRITE_TEXT_METRICS::default();
+                mise.GetMetrics(&mut mesure)?;
+                let marge = t.taille * 0.6;
+                let (largeur, hauteur) = (mesure.width + 2.0 * marge, mesure.height + marge);
+                let (x, y) = ((l - largeur) / 2.0, h - hauteur - t.taille * 1.5);
+                self.pinceau.SetColor(&D2D1_COLOR_F { r: 0.08, g: 0.08, b: 0.1, a: 0.78 * t.opacite });
+                let fond = D2D1_ROUNDED_RECT { rect: D2D_RECT_F { left: x, top: y, right: x + largeur, bottom: y + hauteur }, radiusX: hauteur / 2.0, radiusY: hauteur / 2.0 };
+                ctx.FillRoundedRectangle(&fond, &self.pinceau);
+                self.pinceau.SetColor(&D2D1_COLOR_F { r: 1.0, g: 1.0, b: 1.0, a: t.opacite });
+                ctx.DrawTextLayout(v((x + marge - mesure.left, y + marge / 2.0 - mesure.top)), &mise, &self.pinceau, D2D1_DRAW_TEXT_OPTIONS_NONE);
+            }
             ctx.EndDraw(None, None)?;
             ctx.SetTarget(None);
         }
         Ok(())
+    }
+
+    /// Le format du texte des touches pour `taille` ; `None` si DirectWrite le refuse.
+    fn format(&mut self, taille: f32) -> Option<IDWriteTextFormat> {
+        if let Some((t, f)) = &self.format {
+            if *t == taille {
+                return Some(f.clone());
+            }
+        }
+        // SAFETY: chaines constantes terminees par zero, collection systeme (None).
+        let f = unsafe {
+            self.ecriture.CreateTextFormat(
+                windows62::core::w!("Segoe UI"),
+                None,
+                DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                taille,
+                windows62::core::w!("fr-fr"),
+            )
+        }
+        .ok()?;
+        self.format = Some((taille, f.clone()));
+        Some(f)
     }
 
     /// Le bitmap d'un curseur, lu une fois par forme.
@@ -238,6 +355,21 @@ mod tests {
         let m = transformation((200.0, 150.0, 2.0), 640.0, 360.0);
         assert_eq!(appliquer(&m, (200.0, 150.0)), (320.0, 180.0));
         assert_eq!(appliquer(&m, (210.0, 150.0)), (340.0, 180.0));
+    }
+
+    #[test]
+    fn la_tete_de_fleche_revient_vers_le_depart() {
+        // Une fleche vers la droite : ses deux branches partent en arriere, de part et d'autre.
+        let [a, b] = tete_de_fleche((0.0, 0.0), (100.0, 0.0), 10.0);
+        assert!(a.0 < 100.0 && b.0 < 100.0, "{a:?} {b:?}");
+        assert!((a.1 + b.1).abs() < 1e-4 && a.1.abs() > 3.0, "{a:?} {b:?}");
+    }
+
+    #[test]
+    fn un_trait_se_lit_de_la_page() {
+        let t: Trait = serde_json::from_str(r#"{"outil":"fleche","couleur":[1,0,0],"epaisseur":4,"points":[[1,2],[30,40]]}"#).expect("trait lu");
+        assert_eq!(t.outil, Outil::Fleche);
+        assert_eq!(t.points, vec![(1.0, 2.0), (30.0, 40.0)]);
     }
 
     #[test]

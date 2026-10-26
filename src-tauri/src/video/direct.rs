@@ -1,6 +1,9 @@
 //! Les effets pendant la prise (0.22, ADR-022) : la souris ecoutee par un crochet
 //! `WH_MOUSE_LL` sur son propre fil, l'animation qu'elle nourrit, le curseur lu a
 //! chaque image. Le moteur demande `scene` a chaque image envoyee.
+//! 0.23 (ADR-023) : le clavier ecoute par un crochet `WH_KEYBOARD_LL` sur le meme
+//! fil, seulement quand les touches sont montrees ; les traits du dessin ; le
+//! curseur lisse.
 
 use std::ptr::null_mut;
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -8,9 +11,113 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
-use super::animation::{Animateur, Bouton, Evenement, Geste, Options};
-use super::effets::{CurseurVu, Scene};
+use super::animation::{Animateur, Bouton, Evenement, Geste, ModeTouches, Options, Touche};
+use super::effets::{CurseurVu, Scene, Trait};
 use super::moteur::tenir;
+
+/// Le curseur lisse rattrape la souris avec cette constante de temps.
+const LISSAGE_S: f64 = 0.08;
+
+/// Une frappe brute, telle que le crochet la voit.
+#[derive(Debug, Clone, Copy)]
+pub struct Frappe {
+    pub t: f64,
+    pub vk: u32,
+    pub scan: u32,
+    pub appui: bool,
+}
+
+/// Ou le crochet du clavier ecrit : une seule prise a la fois.
+static ENVOI_CLAVIER: Mutex<Option<(Sender<Frappe>, Instant)>> = Mutex::new(None);
+
+unsafe extern "system" fn procedure_clavier(code: i32, wparam: usize, lparam: isize) -> isize {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{CallNextHookEx, KBDLLHOOKSTRUCT, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP};
+    if code >= 0 {
+        let appui = match wparam as u32 {
+            WM_KEYDOWN | WM_SYSKEYDOWN => Some(true),
+            WM_KEYUP | WM_SYSKEYUP => Some(false),
+            _ => None,
+        };
+        if let Some(appui) = appui {
+            // SAFETY: pour WH_KEYBOARD_LL et code >= 0, lparam pointe un KBDLLHOOKSTRUCT valide le temps de l'appel.
+            let k = unsafe { &*(lparam as *const KBDLLHOOKSTRUCT) };
+            // Jamais d'attente ici : Windows retire un crochet trop lent.
+            if let Ok(envoi) = ENVOI_CLAVIER.try_lock() {
+                if let Some((vers, origine)) = envoi.as_ref() {
+                    let _ = vers.send(Frappe { t: origine.elapsed().as_secs_f64(), vk: k.vkCode, scan: k.scanCode, appui });
+                }
+            }
+        }
+    }
+    // SAFETY: transmission telle quelle a la chaine des crochets.
+    unsafe { CallNextHookEx(null_mut(), code, wparam, lparam) }
+}
+
+/// Ce qu'une touche affiche dans un raccourci ; `None` pour un modificateur ou une
+/// touche sans nom.
+pub fn nom_de_touche(vk: u32) -> Option<String> {
+    let nom = match vk {
+        0x41..=0x5A | 0x30..=0x39 => return char::from_u32(vk).map(String::from),
+        0x60..=0x69 => return Some((vk - 0x60).to_string()),
+        0x70..=0x87 => return Some(format!("F{}", vk - 0x6F)),
+        0x08 => "Retour",
+        0x09 => "Tab",
+        0x0D => "Entrée",
+        0x1B => "Échap",
+        0x20 => "Espace",
+        0x21 => "Pg préc",
+        0x22 => "Pg suiv",
+        0x23 => "Fin",
+        0x24 => "Début",
+        0x25 => "←",
+        0x26 => "↑",
+        0x27 => "→",
+        0x28 => "↓",
+        0x2C => "Impr écran",
+        0x2D => "Inser",
+        0x2E => "Suppr",
+        0x6A => "*",
+        0x6B => "+",
+        0x6D => "-",
+        0x6E => ".",
+        0x6F => "/",
+        0x10..=0x12 | 0x14 | 0x5B | 0x5C | 0xA0..=0xA5 => return None,
+        _ => {
+            use windows_sys::Win32::UI::Input::KeyboardAndMouse::{MapVirtualKeyW, MAPVK_VK_TO_CHAR};
+            // SAFETY: lecture de la disposition du clavier, sans pointeur.
+            let c = unsafe { MapVirtualKeyW(vk, MAPVK_VK_TO_CHAR) } & 0xFFFF;
+            return char::from_u32(c).filter(|c| !c.is_control()).map(|c| c.to_uppercase().collect());
+        }
+    };
+    Some(nom.to_string())
+}
+
+/// Le caractere que tape une touche dans la disposition de la fenetre au premier
+/// plan, Maj et Alt Gr compris ; `None` s'il n'est pas imprimable ou si c'est une
+/// touche morte. L'etat du clavier de Windows n'est pas touche (drapeau 4).
+fn caractere(vk: u32, scan: u32, maj: bool, altgr: bool) -> Option<String> {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyboardLayout, ToUnicodeEx};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+    let mut etat = [0u8; 256];
+    if maj {
+        etat[0x10] = 0x80;
+    }
+    if altgr {
+        etat[0x11] = 0x80;
+        etat[0x12] = 0x80;
+    }
+    let mut tampon = [0u16; 8];
+    // SAFETY: etat fait 256 octets, tampon 8 mots ; la disposition vient du fil de la fenetre au premier plan.
+    let n = unsafe {
+        let disposition = GetKeyboardLayout(GetWindowThreadProcessId(GetForegroundWindow(), null_mut()));
+        ToUnicodeEx(vk, scan, etat.as_ptr(), tampon.as_mut_ptr(), tampon.len() as i32, 4, disposition)
+    };
+    if n <= 0 {
+        return None;
+    }
+    let texte = String::from_utf16(&tampon[..n as usize]).ok()?;
+    (!texte.chars().any(char::is_control)).then_some(texte)
+}
 
 /// Ce que le crochet envoie : l'origine des temps et le coin de la zone, pixels du bureau.
 struct Envoi {
@@ -65,11 +172,14 @@ pub struct EcouteSouris {
 }
 
 impl EcouteSouris {
-    fn lancer(vers: Sender<Evenement>, origine: Instant, coin: (i32, i32)) -> Result<Self, String> {
+    /// `clavier` : ou envoyer les frappes ; `None`, pas de crochet du clavier.
+    fn lancer(vers: Sender<Evenement>, origine: Instant, coin: (i32, i32), clavier: Option<Sender<Frappe>>) -> Result<Self, String> {
         use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
         use windows_sys::Win32::System::Threading::GetCurrentThreadId;
-        use windows_sys::Win32::UI::WindowsAndMessaging::{GetMessageW, SetWindowsHookExW, UnhookWindowsHookEx, MSG, WH_MOUSE_LL};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetMessageW, SetWindowsHookExW, UnhookWindowsHookEx, MSG, WH_KEYBOARD_LL, WH_MOUSE_LL};
         *tenir(&ENVOI) = Some(Envoi { vers, origine, coin });
+        let avec_clavier = clavier.is_some();
+        *tenir(&ENVOI_CLAVIER) = clavier.map(|c| (c, origine));
         let (dire, pose) = channel::<Result<u32, String>>();
         let fil = std::thread::spawn(move || {
             // SAFETY: crochet global de bas niveau, procedure de ce module ; hmod est ce module.
@@ -78,23 +188,32 @@ impl EcouteSouris {
                 let _ = dire.send(Err("crochet de la souris refusé par Windows".to_string()));
                 return;
             }
+            // SAFETY: idem pour le clavier ; refuse, les touches manquent et la souris tient.
+            let touches = if avec_clavier { unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(procedure_clavier), GetModuleHandleW(null_mut()), 0) } } else { null_mut() };
             // SAFETY: sans argument.
             let _ = dire.send(Ok(unsafe { GetCurrentThreadId() }));
-            // SAFETY: MSG ecrit par l'appel ; la boucle sert le crochet jusqu'a WM_QUIT.
+            // SAFETY: MSG ecrit par l'appel ; la boucle sert les crochets jusqu'a WM_QUIT.
             let mut msg: MSG = unsafe { std::mem::zeroed() };
             while unsafe { GetMessageW(&mut msg, null_mut(), 0, 0) } > 0 {}
-            // SAFETY: poignee rendue par SetWindowsHookExW.
-            unsafe { UnhookWindowsHookEx(poignee) };
+            // SAFETY: poignees rendues par SetWindowsHookExW.
+            unsafe {
+                UnhookWindowsHookEx(poignee);
+                if !touches.is_null() {
+                    UnhookWindowsHookEx(touches);
+                }
+            }
         });
         match pose.recv() {
             Ok(Ok(id_fil)) => Ok(EcouteSouris { fil: Some(fil), id_fil }),
             Ok(Err(motif)) => {
                 let _ = fil.join();
                 *tenir(&ENVOI) = None;
+                *tenir(&ENVOI_CLAVIER) = None;
                 Err(motif)
             }
             Err(_) => {
                 *tenir(&ENVOI) = None;
+                *tenir(&ENVOI_CLAVIER) = None;
                 Err("fil du crochet de la souris arrêté".to_string())
             }
         }
@@ -110,6 +229,7 @@ impl Drop for EcouteSouris {
             let _ = fil.join();
         }
         *tenir(&ENVOI) = None;
+        *tenir(&ENVOI_CLAVIER) = None;
     }
 }
 
@@ -130,6 +250,13 @@ pub struct Direct {
     coin: (i32, i32),
     /// Le grossissement du curseur dessine par le moteur ; `None` : Windows le dessine (ou rien).
     curseur: Option<f32>,
+    /// Le curseur lisse (0.23) : sa derniere place dessinee et l'instant.
+    lisse: bool,
+    place_lissee: Option<(f32, f32, f64)>,
+    recus_clavier: Option<Receiver<Frappe>>,
+    /// Le dessin a l'ecran (0.23) : ouvert, et ses traits en pixels de la zone.
+    dessin: bool,
+    traits: Vec<Trait>,
     _ecoute: Option<EcouteSouris>,
 }
 
@@ -138,14 +265,34 @@ pub type Partage = Arc<Mutex<Direct>>;
 impl Direct {
     /// Lance l'ecoute. Sans crochet, les effets de la souris manquent, le reste tient :
     /// la note le dit.
-    pub fn lancer(options: Options, coin: (i32, i32), curseur: Option<f32>) -> (Partage, Option<String>) {
+    /// `lisse` : le curseur dessine par le moteur suit la souris avec douceur.
+    pub fn lancer(options: Options, coin: (i32, i32), curseur: Option<f32>, lisse: bool) -> (Partage, Option<String>) {
         let origine = Instant::now();
         let (vers, recus) = channel();
-        let (ecoute, note) = match EcouteSouris::lancer(vers, origine, coin) {
+        // Pas de crochet du clavier quand les touches ne se montrent pas.
+        let (vers_clavier, recus_clavier) = if options.touches == ModeTouches::Aucune {
+            (None, None)
+        } else {
+            let (v, r) = channel();
+            (Some(v), Some(r))
+        };
+        let (ecoute, note) = match EcouteSouris::lancer(vers, origine, coin, vers_clavier) {
             Ok(e) => (Some(e), None),
             Err(motif) => (None, Some(format!("sans clics mis en avant ({motif})"))),
         };
-        let direct = Direct { animateur: Animateur::new(options), recus, origine, coin, curseur, _ecoute: ecoute };
+        let direct = Direct {
+            animateur: Animateur::new(options),
+            recus,
+            origine,
+            coin,
+            curseur,
+            lisse,
+            place_lissee: None,
+            recus_clavier,
+            dessin: false,
+            traits: Vec::new(),
+            _ecoute: ecoute,
+        };
         (Arc::new(Mutex::new(direct)), note)
     }
 
@@ -153,18 +300,62 @@ impl Direct {
         quand.saturating_duration_since(self.origine).as_secs_f64()
     }
 
-    /// La scene de l'image prise a `quand`.
-    pub fn scene(&mut self, quand: Instant) -> Scene {
-        while let Ok(e) = self.recus.try_recv() {
+    /// Donne a l'animation ce que les crochets ont recu. Pendant le dessin, un appui
+    /// trace un trait : il ne fait ni onde, ni trainee, ni zoom.
+    fn vider(&mut self) {
+        while let Ok(mut e) = self.recus.try_recv() {
+            if self.dessin && matches!(e.geste, Geste::Appui(_)) {
+                e.geste = Geste::Bouge;
+            }
             self.animateur.recevoir(e);
         }
+        if let Some(recus) = &self.recus_clavier {
+            while let Ok(f) = recus.try_recv() {
+                let (maj, altgr) = self.animateur.modificateurs();
+                let caractere = if f.appui { caractere(f.vk, f.scan, maj, altgr) } else { None };
+                self.animateur.recevoir_touche(&Touche { t: f.t, vk: f.vk, appui: f.appui, nom: nom_de_touche(f.vk), caractere });
+            }
+        }
+    }
+
+    /// La scene de l'image prise a `quand`.
+    pub fn scene(&mut self, quand: Instant) -> Scene {
+        self.vider();
         let t = self.maintenant(quand);
         let mut scene = self.animateur.scene(t);
-        scene.curseur = self.curseur.and_then(|taille| {
-            let (poignee, x, y) = curseur()?;
-            Some(CurseurVu { poignee, x: (x - self.coin.0) as f32, y: (y - self.coin.1) as f32, taille })
-        });
+        scene.curseur = match (self.curseur, curseur()) {
+            (Some(taille), Some((poignee, x, y))) => {
+                let (mut x, mut y) = ((x - self.coin.0) as f32, (y - self.coin.1) as f32);
+                if self.lisse {
+                    let (px, py, pt) = self.place_lissee.unwrap_or((x, y, t));
+                    let k = 1.0 - (-(t - pt).max(0.0) / LISSAGE_S).exp() as f32;
+                    (x, y) = (px + (x - px) * k, py + (y - py) * k);
+                    self.place_lissee = Some((x, y, t));
+                }
+                Some(CurseurVu { poignee, x, y, taille })
+            }
+            _ => None,
+        };
+        if self.dessin {
+            scene.traits = self.traits.clone();
+        }
         scene
+    }
+
+    /// Ouvre ou ferme le dessin ; ferme, ses traits s'effacent.
+    pub fn dessin(&mut self, ouvert: bool) {
+        self.dessin = ouvert;
+        self.traits.clear();
+    }
+
+    pub fn traits(&mut self, traits: Vec<Trait>) {
+        if self.dessin {
+            self.traits = traits;
+        }
+    }
+
+    pub fn dessin_ouvert(&self) -> bool {
+        self.dessin
     }
 
     pub fn basculer_zoom(&mut self) -> bool {
@@ -184,9 +375,7 @@ impl Direct {
 
     /// L'origine des temps et les evenements gardes, pour le journal.
     pub fn journal(&mut self) -> (Instant, Vec<Evenement>) {
-        while let Ok(e) = self.recus.try_recv() {
-            self.animateur.recevoir(e);
-        }
+        self.vider();
         (self.origine, self.animateur.journal().to_vec())
     }
 }
@@ -271,6 +460,17 @@ mod tests {
     }
 
     #[test]
+    fn noms_des_touches() {
+        assert_eq!(nom_de_touche(0x53).as_deref(), Some("S"));
+        assert_eq!(nom_de_touche(0x31).as_deref(), Some("1"));
+        assert_eq!(nom_de_touche(0x74).as_deref(), Some("F5"));
+        assert_eq!(nom_de_touche(0x0D).as_deref(), Some("Entrée"));
+        assert_eq!(nom_de_touche(0x25).as_deref(), Some("←"));
+        assert_eq!(nom_de_touche(0xA2), None, "Ctrl gauche est un modificateur");
+        assert_eq!(nom_de_touche(0x5B), None, "Win est un modificateur");
+    }
+
+    #[test]
     fn gestes_des_messages() {
         use windows_sys::Win32::UI::WindowsAndMessaging::{WM_LBUTTONDOWN, WM_MOUSEWHEEL, WM_RBUTTONUP};
         assert_eq!(geste_du_message(WM_LBUTTONDOWN), Some(Geste::Appui(Bouton::Gauche)));
@@ -285,7 +485,7 @@ mod tests {
     fn le_crochet_recoit_la_souris() {
         use windows_sys::Win32::UI::Input::KeyboardAndMouse::{SendInput, INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_MOVE, MOUSEINPUT};
         let (vers, recus) = channel();
-        let ecoute = EcouteSouris::lancer(vers, Instant::now(), (0, 0)).expect("crochet pose");
+        let ecoute = EcouteSouris::lancer(vers, Instant::now(), (0, 0), None).expect("crochet pose");
         let bouger = |dx: i32| INPUT { r#type: INPUT_MOUSE, Anonymous: INPUT_0 { mi: MOUSEINPUT { dx, dy: 0, mouseData: 0, dwFlags: MOUSEEVENTF_MOVE, time: 0, dwExtraInfo: 0 } } };
         let entrees = [bouger(1), bouger(-1)];
         // SAFETY: deux INPUT valides, taille exacte.

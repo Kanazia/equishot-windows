@@ -115,6 +115,9 @@ pub struct Mise {
     pub onde: bool,
     pub trainee: bool,
     pub curseur_taille: f32,
+    pub touches: super::animation::ModeTouches,
+    pub zoom_auto: bool,
+    pub curseur_lisse: bool,
 }
 
 impl Default for Mise {
@@ -140,6 +143,9 @@ impl Mise {
             onde: r.onde,
             trainee: r.trainee,
             curseur_taille: r.curseur_taille,
+            touches: r.touches,
+            zoom_auto: r.zoom_auto,
+            curseur_lisse: r.curseur_lisse,
         }
     }
 
@@ -162,6 +168,9 @@ impl Mise {
             onde: self.onde,
             trainee: self.trainee,
             curseur_taille: self.curseur_taille,
+            touches: self.touches,
+            zoom_auto: self.zoom_auto,
+            curseur_lisse: self.curseur_lisse,
         }
     }
 }

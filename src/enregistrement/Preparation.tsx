@@ -23,6 +23,7 @@ import {
   type Peripheriques,
   type ReglagesVideo,
   type Scene,
+  type ModeTouches,
   type TailleCamera,
 } from "@/lib/captures-api";
 import { cn } from "@/lib/utils";
@@ -38,6 +39,13 @@ const CURSEURS: [number, string][] = [
   [1.5, "1,5x"],
   [2, "2x"],
   [3, "3x"],
+];
+
+/** Les touches montrées dans la vidéo (0.23). */
+const TOUCHES: [ModeTouches, string, string][] = [
+  ["aucune", "Aucune", "Aucune touche dans la vidéo."],
+  ["raccourcis", "Raccourcis", "Les touches tenues avec Ctrl, Alt ou Win, et F1 à F24."],
+  ["toutes", "Toutes", "Tout ce qui est tapé, mots de passe compris."],
 ];
 
 /** Les trois diamètres de la bulle de caméra (0.18). */
@@ -413,9 +421,45 @@ export function Preparation({ etat }: { etat: EtatBarre }) {
                   ))}
                 </div>
               </div>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                <div className="flex items-center gap-1" role="group" aria-label="Touches">
+                  <span className="mr-0.5 text-[11px] text-on-surface">Touches</span>
+                  {TOUCHES.map(([mode, libelle, aide]) => (
+                    <button
+                      type="button"
+                      key={mode}
+                      data-testid={`prep-touches-${mode}`}
+                      aria-pressed={reglages.touches === mode}
+                      title={aide}
+                      onClick={() => changer({ touches: mode })}
+                      className={cn("h-7 rounded-full px-2 text-[11px] font-medium", reglages.touches === mode ? "bg-primary text-primary-foreground" : "eq-hover text-on-surface")}
+                    >
+                      {libelle}
+                    </button>
+                  ))}
+                </div>
+                <label className="flex items-center gap-1.5 text-[11px] text-on-surface" title="Le zoom vient seul au clic et repart 2,5 s après le dernier clic.">
+                  <input type="checkbox" data-testid="prep-zoom-auto" checked={reglages.zoomAuto} onChange={(e) => changer({ zoomAuto: e.target.checked })} className="accent-primary" />
+                  Zoom au clic
+                </label>
+                <label
+                  className={cn("flex items-center gap-1.5 text-[11px] text-on-surface", !reglages.curseur && "opacity-40")}
+                  title={reglages.curseur ? "Le curseur suit la souris avec douceur dans la vidéo." : "Le curseur est caché dans les réglages."}
+                >
+                  <input
+                    type="checkbox"
+                    data-testid="prep-curseur-lisse"
+                    disabled={!reglages.curseur}
+                    checked={reglages.curseurLisse}
+                    onChange={(e) => changer({ curseurLisse: e.target.checked })}
+                    className="accent-primary"
+                  />
+                  Curseur lissé
+                </label>
+              </div>
               {etat.raccourcisEffets[0] && (
                 <p data-testid="prep-effets-raccourcis" className="text-[11px] text-muted">
-                  Pendant la prise : zoom {etat.raccourcisEffets[0]}, projecteur {etat.raccourcisEffets[1]}.
+                  Pendant la prise : zoom {etat.raccourcisEffets[0]}, projecteur {etat.raccourcisEffets[1]}, dessin {etat.raccourcisEffets[2]}.
                 </p>
               )}
             </div>

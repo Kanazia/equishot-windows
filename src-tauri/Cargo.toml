@@ -1,6 +1,6 @@
 [package]
 name = "equishot"
-version = "0.22.0"
+version = "0.23.0"
 description = "EquiShot, compagnon de capture d'ecran d'Equinox AI"
 authors = ["Equinox AI"]
 edition = "2021"
@@ -66,6 +66,7 @@ windows62 = { package = "windows", version = "=0.62.2", features = [
     "Win32_Graphics_Direct2D",
     "Win32_Graphics_Direct2D_Common",
     "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_DirectWrite",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
     "Win32_Graphics_Gdi",

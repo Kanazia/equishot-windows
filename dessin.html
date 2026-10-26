@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>EquiShot, dessin</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        /* Presque transparent : la fenetre prend les clics partout. Jamais filmee (protegee). */
+        background: rgba(0, 0, 0, 0.01);
+        cursor: crosshair;
+        user-select: none;
+      }
+      canvas {
+        position: fixed;
+        inset: 0;
+        width: 100vw;
+        height: 100vh;
+        touch-action: none;
+      }
+      #cadre {
+        position: fixed;
+        inset: 0;
+        border: 3px solid var(--couleur, #ee2929);
+        pointer-events: none;
+      }
+      #aide {
+        position: fixed;
+        top: 10px;
+        left: 50%;
+        transform: translateX(-50%);
+        padding: 6px 12px;
+        border-radius: 999px;
+        background: rgba(20, 20, 26, 0.82);
+        color: #fff;
+        font: 500 12px "Segoe UI", sans-serif;
+        white-space: nowrap;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas></canvas>
+    <div id="cadre"></div>
+    <div id="aide">Glisser : stylo. Maj : flèche. Ctrl : rectangle. R J B V : couleur. E : effacer. Ctrl+Z : annuler. Échap : finir.</div>
+    <script type="module" src="/src/dessin/main.ts"></script>
+  </body>
+</html>

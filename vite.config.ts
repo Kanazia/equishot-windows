@@ -16,7 +16,7 @@ export default defineConfig(() => ({
     },
   },
 
-  // Sept pages : la fenêtre EquiShot (galerie, réglages), la pastille, la sélection, les vignettes, les épingles, la barre d'enregistrement vidéo, la bulle de caméra.
+  // Huit pages : la fenêtre EquiShot (galerie, réglages), la pastille, la sélection, les vignettes, les épingles, la barre d'enregistrement vidéo, la bulle de caméra, le dessin pendant la prise.
   build: {
     rollupOptions: {
       input: {
@@ -27,6 +27,7 @@ export default defineConfig(() => ({
         epingle: path.resolve(__dirname, "epingle.html"),
         enregistrement: path.resolve(__dirname, "enregistrement.html"),
         camera: path.resolve(__dirname, "camera.html"),
+        dessin: path.resolve(__dirname, "dessin.html"),
       },
     },
   },

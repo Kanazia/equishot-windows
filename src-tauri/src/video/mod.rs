@@ -34,6 +34,8 @@ use moteur::{Demande, Enregistrement, Reglages};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 
 pub const ETIQUETTE_BARRE: &str = "video-barre";
+/// La fenetre du dessin a l'ecran pendant la prise (0.23).
+pub const ETIQUETTE_DESSIN: &str = "video-dessin";
 /// Emis vers la barre : la phase, le decompte, le temps filme.
 pub const EVENEMENT_ETAT: &str = "video://etat";
 /// Reglage : les choix du son et du curseur, en JSON (`Reglages`).
@@ -44,7 +46,7 @@ const BARRE: (f64, f64) = (472.0, 52.0);
 /// Camera (0.18) ajoute 90 px estimes, a verifier a l'oeil a la prise unique.
 /// La rangee Scene (0.19) ajoute 70 px estimes, a verifier a l'oeil a la prise unique.
 /// La rangee Effets (0.22) ajoute 75 px estimes, a verifier a l'oeil.
-const PANNEAU: (f64, f64) = (420.0, 575.0);
+const PANNEAU: (f64, f64) = (420.0, 640.0);
 /// Emis vers la barre : `Survol`, a chaque changement.
 const EVENEMENT_SURVOL: &str = "video://survol";
 /// La poignee de la barre (point rouge et duree, a gauche), en pixels CSS.
@@ -100,7 +102,7 @@ struct EnCours {
     /// poses seulement pendant qu'elle filme.
     direct: Option<direct::Partage>,
     raccourcis: Vec<Shortcut>,
-    raccourcis_lisibles: (String, String),
+    raccourcis_lisibles: [String; 3],
 }
 
 /// Ce que la barre affiche.
@@ -119,10 +121,11 @@ pub struct EtatBarre {
     cameras: Vec<bulle::Camera>,
     /// Mise en scene : ce qui est filme (0.19).
     cible: Option<scenes::Cible>,
-    /// Le zoom et le projecteur (0.22), et leurs raccourcis lisibles.
+    /// Le zoom et le projecteur (0.22), le dessin (0.23), et leurs raccourcis lisibles.
     zoom: bool,
     projecteur: bool,
-    raccourcis_effets: (String, String),
+    dessin: bool,
+    raccourcis_effets: [String; 3],
 }
 
 impl EnCours {
@@ -147,7 +150,7 @@ impl EnCours {
         };
         let actif_ms = enreg.actif_ms();
         // `try_lock` : le fil des images tient ce verrou le temps d'une scene.
-        let (zoom, projecteur) = self.direct.as_ref().and_then(|d| d.try_lock().ok().map(|d| d.allumes())).unwrap_or_default();
+        let (zoom, projecteur, dessin) = self.direct.as_ref().and_then(|d| d.try_lock().ok().map(|d| (d.allumes().0, d.allumes().1, d.dessin_ouvert()))).unwrap_or_default();
         EtatBarre {
             phase: if enreg.en_pause() { "pause" } else { "filme" },
             reste: 0,
@@ -159,18 +162,19 @@ impl EnCours {
             cible: None,
             zoom,
             projecteur,
+            dessin,
             raccourcis_effets: self.raccourcis_lisibles.clone(),
         }
     }
 }
 
-/// Les raccourcis du zoom et du projecteur, poses pendant la prise. En dev, Maj en plus :
-/// l'instance de production garde les siens.
-fn raccourcis_effets(dev: bool) -> [&'static str; 2] {
+/// Les raccourcis du zoom, du projecteur et du dessin, poses pendant la prise. En dev,
+/// Maj en plus : l'instance de production garde les siens.
+fn raccourcis_effets(dev: bool) -> [&'static str; 3] {
     if dev {
-        ["Ctrl+Alt+Shift+Z", "Ctrl+Alt+Shift+L"]
+        ["Ctrl+Alt+Shift+Z", "Ctrl+Alt+Shift+L", "Ctrl+Alt+Shift+D"]
     } else {
-        ["Ctrl+Alt+Z", "Ctrl+Alt+L"]
+        ["Ctrl+Alt+Z", "Ctrl+Alt+L", "Ctrl+Alt+D"]
     }
 }
 
@@ -178,17 +182,16 @@ fn lisible(combinaison: &str) -> String {
     combinaison.replace("Shift", "Maj").replace('+', " + ")
 }
 
-fn raccourcis_lisibles(dev: bool) -> (String, String) {
-    let [z, l] = raccourcis_effets(dev).map(lisible);
-    (z, l)
+fn raccourcis_lisibles(dev: bool) -> [String; 3] {
+    raccourcis_effets(dev).map(lisible)
 }
 
-/// Pose les deux raccourcis ; rend ceux qui ont tenu et une note par refus. Hors de
+/// Pose les trois raccourcis ; rend ceux qui ont tenu et une note par refus. Hors de
 /// tout verrou : le greffon attend le thread principal.
 fn poser_raccourcis_effets(app: &tauri::AppHandle) -> (Vec<Shortcut>, Vec<String>) {
     let dev = app.state::<AppState>().dev;
     let (mut poses, mut notes) = (Vec::new(), Vec::new());
-    for (combinaison, nom) in raccourcis_effets(dev).into_iter().zip(["zoom", "projecteur"]) {
+    for (combinaison, nom) in raccourcis_effets(dev).into_iter().zip(["zoom", "projecteur", "dessin"]) {
         match combinaison.parse::<Shortcut>() {
             Ok(r) if app.global_shortcut().register(r).is_ok() => poses.push(r),
             _ => notes.push(format!("{nom} sans raccourci ({} déjà pris)", lisible(combinaison))),
@@ -204,12 +207,19 @@ fn retirer_raccourcis_effets(app: &tauri::AppHandle, raccourcis: &[Shortcut]) {
 }
 
 /// Le gestionnaire global des raccourcis, sur le thread principal : vrai si la frappe
-/// est celle du zoom ou du projecteur d'une prise en cours. Jamais d'attente (`try_lock`).
+/// est celle du zoom, du projecteur ou du dessin d'une prise en cours. Jamais d'attente
+/// (`try_lock`).
 pub fn sur_raccourci_effet(app: &tauri::AppHandle, raccourci: &Shortcut) -> bool {
     let etat = app.state::<EtatVideo>();
     let Ok(en_cours) = etat.en_cours.try_lock() else { return false };
     let Some(e) = en_cours.as_ref() else { return false };
     let Some(i) = e.raccourcis.iter().position(|r| r == raccourci) else { return false };
+    if i == 2 {
+        // Une fenetre a ouvrir : hors du thread principal et du verrou.
+        let app = app.clone();
+        std::thread::spawn(move || basculer_dessin(&app));
+        return true;
+    }
     if let Some(mut d) = e.direct.as_ref().and_then(|d| d.try_lock().ok()) {
         if i == 0 {
             d.basculer_zoom();
@@ -233,6 +243,73 @@ pub async fn video_effet(app: tauri::AppHandle, zoom: bool) {
         }
     }
     dire_etat(&app);
+}
+
+/// Le bouton crayon de la barre, le raccourci du dessin, et Echap dans le dessin.
+#[tauri::command]
+pub async fn video_dessin_basculer(app: tauri::AppHandle) {
+    basculer_dessin(&app);
+}
+
+/// Les traits de la page du dessin, en pixels de la zone filmee.
+#[tauri::command]
+pub async fn video_dessin(app: tauri::AppHandle, traits: Vec<effets::Trait>) {
+    let direct = tenir(&app.state::<EtatVideo>().en_cours).as_ref().and_then(|e| e.direct.clone());
+    if let Some(d) = direct {
+        tenir(&d).traits(traits);
+    }
+}
+
+/// Ouvre le dessin sur la zone filmee, ou le ferme (0.23, ADR-023). Seulement pendant
+/// que la prise filme.
+fn basculer_dessin(app: &tauri::AppHandle) {
+    let lu = tenir(&app.state::<EtatVideo>().en_cours).as_ref().filter(|e| e.enreg.is_some()).and_then(|e| e.direct.clone().map(|d| (d, e.zone_bureau)));
+    let Some((direct, zone)) = lu else { return };
+    if app.get_webview_window(ETIQUETTE_DESSIN).is_some() {
+        fermer_dessin(app);
+        tenir(&direct).dessin(false);
+    } else {
+        tenir(&direct).dessin(true);
+        if let Err(motif) = ouvrir_dessin(app, zone) {
+            tenir(&direct).dessin(false);
+            fermer_dessin(app);
+            captures::avertir(app, &motif);
+        }
+    }
+    dire_etat(app);
+}
+
+/// La fenetre du dessin, posee sur la zone filmee : transparente, toujours devant,
+/// focalisable (Echap, les couleurs), et protegee : jamais filmee, le moteur
+/// redessine ses traits dans l'image, sous le zoom.
+fn ouvrir_dessin(app: &tauri::AppHandle, zone: Rect) -> Result<(), String> {
+    let fenetre = WebviewWindowBuilder::new(app, ETIQUETTE_DESSIN, WebviewUrl::App("dessin.html".into()))
+        .title("EquiShot, dessin")
+        .decorations(false)
+        .transparent(true)
+        .shadow(false)
+        .resizable(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .content_protected(true)
+        .visible(false)
+        .build()
+        .map_err(|e| format!("Dessin impossible à ouvrir : {e}"))?;
+    fenetres::sans_menu_alt(&fenetre);
+    fenetres::hors_occlusion(&fenetre);
+    fenetre
+        .set_position(tauri::PhysicalPosition::new(zone.0, zone.1))
+        .and_then(|_| fenetre.set_size(tauri::PhysicalSize::new(zone.2.max(1) as u32, zone.3.max(1) as u32)))
+        .map_err(|e| format!("Dessin impossible à placer : {e}"))?;
+    fenetre.show().and_then(|_| fenetre.set_focus()).map_err(|e| format!("Dessin impossible à montrer : {e}"))
+}
+
+/// Ferme la fenetre du dessin si elle est la. Sans verrou : appelee aussi a l'arret.
+fn fermer_dessin(app: &tauri::AppHandle) {
+    if let Some(fenetre) = app.get_webview_window(ETIQUETTE_DESSIN) {
+        fenetres::avant_fermeture(&fenetre);
+        let _ = fenetre.close();
+    }
 }
 
 /// La ligne de la barre : sources absentes, perdues, notes de la camera, puis le plafond.
@@ -356,6 +433,7 @@ fn ouvrir_barre(app: &tauri::AppHandle, place: (i32, i32)) -> Result<(), String>
 }
 
 fn fermer_barre(app: &tauri::AppHandle) {
+    fermer_dessin(app);
     if let Some(fenetre) = app.get_webview_window(ETIQUETTE_BARRE) {
         fenetres::avant_fermeture(&fenetre);
         let _ = fenetre.close();
@@ -854,8 +932,8 @@ fn decompter_puis_filmer(app: tauri::AppHandle, numero: u64, demande: Demande) {
     let Some((coin, echelle)) = lu else { return };
     let mut demande = demande;
     let r = &demande.reglages;
-    let options = animation::Options { onde: r.onde, trainee: r.trainee, echelle: echelle as f32 };
-    let (direct, note_souris) = direct::Direct::lancer(options, coin, r.curseur_agrandi());
+    let options = animation::Options { onde: r.onde, trainee: r.trainee, echelle: echelle as f32, zoom_auto: r.zoom_auto, touches: r.touches };
+    let (direct, note_souris) = direct::Direct::lancer(options, coin, r.curseur_agrandi(), r.curseur && r.curseur_lisse);
     let pour_moteur = direct.clone();
     demande.effets = Some(std::sync::Arc::new(move |quand| tenir(&pour_moteur).scene(quand)));
     let lance = Enregistrement::demarrer(demande);

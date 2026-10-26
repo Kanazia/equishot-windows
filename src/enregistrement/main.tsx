@@ -1,7 +1,7 @@
 /**
  * La barre d'enregistrement vidéo (ADR-016, ADR-017). Elle s'ouvre en panneau
  * de mise en scène (`Preparation`), puis devient la barre : le décompte, puis la
- * durée filmée, le zoom et le projecteur (0.22), « Pause » / « Reprendre »,
+ * durée filmée, le zoom et le projecteur (0.22), le dessin (0.23), « Pause » / « Reprendre »,
  * « Arrêter », « Abandonner ». Rust la
  * rend invisible aux captures (`content_protected`) et, une fois lancée, non
  * focalisable : un clic ici laisse le premier plan à l'application filmée.
@@ -23,6 +23,7 @@ import {
   surSurvolVideo,
   videoAbandonner,
   videoArreter,
+  videoDessinBasculer,
   videoEffet,
   videoEtat,
   videoPauser,
@@ -73,7 +74,8 @@ function Barre() {
     cible: null,
     zoom: false,
     projecteur: false,
-    raccourcisEffets: ["", ""],
+    dessin: false,
+    raccourcisEffets: ["", "", ""],
   });
   const [survol, setSurvol] = useState<Survol>("normale");
   const [erreur, setErreur] = useState("");
@@ -161,6 +163,15 @@ function Barre() {
                 raccourci={etat.raccourcisEffets[1]}
                 allume={etat.projecteur}
                 onClick={() => void videoEffet(false).catch((e) => setErreur(errorText(e)))}
+                classe={bouton}
+              />
+              <BasculeEffet
+                testid="barre-dessin"
+                icone="draw"
+                nom="Dessiner"
+                raccourci={etat.raccourcisEffets[2]}
+                allume={etat.dessin}
+                onClick={() => void videoDessinBasculer().catch((e) => setErreur(errorText(e)))}
                 classe={bouton}
               />
             </>
