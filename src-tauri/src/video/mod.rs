@@ -40,8 +40,9 @@ pub const ETIQUETTE_DESSIN: &str = "video-dessin";
 pub const EVENEMENT_ETAT: &str = "video://etat";
 /// Reglage : les choix du son et du curseur, en JSON (`Reglages`).
 const CLE_REGLAGES: &str = "video_reglages";
-/// Taille de la barre, en pixels CSS. 472 depuis la 0.22 : le zoom et le projecteur y prennent 2 x 36 px.
-const BARRE: (f64, f64) = (472.0, 52.0);
+/// Taille de la barre, en pixels CSS. 472 depuis la 0.22 (zoom et projecteur) ; 640 depuis la 0.24 :
+/// la poignee a deplacer et les trois outils de la souris.
+const BARRE: (f64, f64) = (640.0, 52.0);
 /// La meme fenetre pendant la mise en scene : le panneau de preparation. La rangee
 /// Camera (0.18) ajoute 90 px estimes, a verifier a l'oeil a la prise unique.
 /// La rangee Scene (0.19) ajoute 70 px estimes, a verifier a l'oeil a la prise unique.
@@ -49,8 +50,8 @@ const BARRE: (f64, f64) = (472.0, 52.0);
 const PANNEAU: (f64, f64) = (420.0, 640.0);
 /// Emis vers la barre : `Survol`, a chaque changement.
 const EVENEMENT_SURVOL: &str = "video://survol";
-/// La poignee de la barre (point rouge et duree, a gauche), en pixels CSS.
-const POIGNEE_CSS: f64 = 96.0;
+/// La poignee de la barre (de quoi la deplacer, point rouge et duree, a gauche), en pixels CSS.
+const POIGNEE_CSS: f64 = 112.0;
 /// Une heure filmee au plus ; la barre previent cinq minutes avant.
 const PLAFOND_MS: u64 = 3_600_000;
 const PREVENIR_MS: u64 = 3_300_000;
@@ -103,6 +104,21 @@ struct EnCours {
     direct: Option<direct::Partage>,
     raccourcis: Vec<Shortcut>,
     raccourcis_lisibles: [String; 3],
+    /// L'outil de la souris pendant la prise (0.24).
+    outil: OutilSouris,
+}
+
+/// L'outil de la souris pendant la prise (0.24, ADR-024). La souris clique
+/// l'application filmee ; le pointeur (encre qui s'efface) et le crayon (encre qui
+/// reste) dessinent sur la fenetre du dessin, qui garde le clic : rien n'est
+/// selectionne dessous.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OutilSouris {
+    #[default]
+    Souris,
+    Pointeur,
+    Crayon,
 }
 
 /// Ce que la barre affiche.
@@ -121,10 +137,10 @@ pub struct EtatBarre {
     cameras: Vec<bulle::Camera>,
     /// Mise en scene : ce qui est filme (0.19).
     cible: Option<scenes::Cible>,
-    /// Le zoom et le projecteur (0.22), le dessin (0.23), et leurs raccourcis lisibles.
+    /// Le zoom et le projecteur (0.22), l'outil de la souris (0.24), et les raccourcis lisibles.
     zoom: bool,
     projecteur: bool,
-    dessin: bool,
+    outil: OutilSouris,
     raccourcis_effets: [String; 3],
 }
 
@@ -150,7 +166,7 @@ impl EnCours {
         };
         let actif_ms = enreg.actif_ms();
         // `try_lock` : le fil des images tient ce verrou le temps d'une scene.
-        let (zoom, projecteur, dessin) = self.direct.as_ref().and_then(|d| d.try_lock().ok().map(|d| (d.allumes().0, d.allumes().1, d.dessin_ouvert()))).unwrap_or_default();
+        let (zoom, projecteur) = self.direct.as_ref().and_then(|d| d.try_lock().ok().map(|d| d.allumes())).unwrap_or_default();
         EtatBarre {
             phase: if enreg.en_pause() { "pause" } else { "filme" },
             reste: 0,
@@ -162,7 +178,7 @@ impl EnCours {
             cible: None,
             zoom,
             projecteur,
-            dessin,
+            outil: self.outil,
             raccourcis_effets: self.raccourcis_lisibles.clone(),
         }
     }
@@ -217,7 +233,9 @@ pub fn sur_raccourci_effet(app: &tauri::AppHandle, raccourci: &Shortcut) -> bool
     if i == 2 {
         // Une fenetre a ouvrir : hors du thread principal et du verrou.
         let app = app.clone();
-        std::thread::spawn(move || basculer_dessin(&app));
+        // Le raccourci du dessin bascule le crayon, comme en 0.23.
+        let outil = if e.outil == OutilSouris::Souris { OutilSouris::Crayon } else { OutilSouris::Souris };
+        std::thread::spawn(move || choisir_outil(&app, outil));
         return true;
     }
     if let Some(mut d) = e.direct.as_ref().and_then(|d| d.try_lock().ok()) {
@@ -245,10 +263,10 @@ pub async fn video_effet(app: tauri::AppHandle, zoom: bool) {
     dire_etat(&app);
 }
 
-/// Le bouton crayon de la barre, le raccourci du dessin, et Echap dans le dessin.
+/// Les outils de la barre (0.24), et Echap ou le clic droit dans le dessin (`souris`).
 #[tauri::command]
-pub async fn video_dessin_basculer(app: tauri::AppHandle) {
-    basculer_dessin(&app);
+pub async fn video_outil(app: tauri::AppHandle, outil: OutilSouris) {
+    choisir_outil(&app, outil);
 }
 
 /// Les traits de la page du dessin, en pixels de la zone filmee.
@@ -260,20 +278,36 @@ pub async fn video_dessin(app: tauri::AppHandle, traits: Vec<effets::Trait>) {
     }
 }
 
-/// Ouvre le dessin sur la zone filmee, ou le ferme (0.23, ADR-023). Seulement pendant
-/// que la prise filme.
-fn basculer_dessin(app: &tauri::AppHandle) {
-    let lu = tenir(&app.state::<EtatVideo>().en_cours).as_ref().filter(|e| e.enreg.is_some()).and_then(|e| e.direct.clone().map(|d| (d, e.zone_bureau)));
-    let Some((direct, zone)) = lu else { return };
-    if app.get_webview_window(ETIQUETTE_DESSIN).is_some() {
-        fermer_dessin(app);
-        tenir(&direct).dessin(false);
-    } else {
-        tenir(&direct).dessin(true);
-        if let Err(motif) = ouvrir_dessin(app, zone) {
-            tenir(&direct).dessin(false);
+/// Emis vers la page du dessin : l'outil a pris la main (`pointeur` ou `crayon`).
+const EVENEMENT_OUTIL: &str = "video://outil";
+
+/// Change l'outil de la souris (0.24, ADR-024) : la souris ferme le dessin (ses traits
+/// s'effacent), le pointeur et le crayon l'ouvrent sur la zone filmee, ou passent la
+/// main a celui qui est deja ouvert. Seulement pendant que la prise filme.
+fn choisir_outil(app: &tauri::AppHandle, outil: OutilSouris) {
+    let lu = tenir(&app.state::<EtatVideo>().en_cours)
+        .as_mut()
+        .filter(|e| e.enreg.is_some())
+        .and_then(|e| e.direct.clone().map(|d| (d, e.zone_bureau, std::mem::replace(&mut e.outil, outil))));
+    let Some((direct, zone, avant)) = lu else { return };
+    match (avant, outil) {
+        (_, OutilSouris::Souris) => {
             fermer_dessin(app);
-            captures::avertir(app, &motif);
+            tenir(&direct).dessin(false);
+        }
+        (OutilSouris::Souris, _) => {
+            tenir(&direct).dessin(true);
+            if let Err(motif) = ouvrir_dessin(app, zone) {
+                tenir(&direct).dessin(false);
+                fermer_dessin(app);
+                if let Some(e) = tenir(&app.state::<EtatVideo>().en_cours).as_mut() {
+                    e.outil = OutilSouris::Souris;
+                }
+                captures::avertir(app, &motif);
+            }
+        }
+        _ => {
+            let _ = app.emit_to(ETIQUETTE_DESSIN, EVENEMENT_OUTIL, outil);
         }
     }
     dire_etat(app);
@@ -531,6 +565,7 @@ async fn ouvrir_mise_en_scene(app: tauri::AppHandle, visee: Visee, devant: isize
             direct: None,
             raccourcis: Vec::new(),
             raccourcis_lisibles: raccourcis_lisibles(app.state::<AppState>().dev),
+            outil: OutilSouris::Souris,
         });
     }
     // Une zone tracee garde son contour, traverse par la souris ; l'ecran entier ferme la
@@ -887,10 +922,16 @@ fn dans(p: (i32, i32), r: Rect) -> bool {
     p.0 >= r.0 && p.0 < r.0 + r.2 && p.1 >= r.1 && p.1 < r.1 + r.3
 }
 
+fn chevauche(a: Rect, b: Rect) -> bool {
+    a.0 < b.0 + b.2 && b.0 < a.0 + a.2 && a.1 < b.1 + b.3 && b.1 < a.1 + a.3
+}
+
 /// La barre pendant l'enregistrement : effacee et traversante sous le curseur,
-/// sauf sur la poignee, qui la rend jusqu'a ce que le curseur sorte.
-fn survol(avant: Survol, curseur: (i32, i32), barre: Rect, poignee: Rect) -> Survol {
-    match (dans(curseur, barre), dans(curseur, poignee), avant) {
+/// sauf sur la poignee, qui la rend jusqu'a ce que le curseur sorte. 0.24 : seulement
+/// quand elle couvre la zone filmee (l'ecran entier, ou glissee dedans) ; dehors,
+/// elle ne cache rien et reste entiere.
+fn survol(avant: Survol, curseur: (i32, i32), barre: Rect, poignee: Rect, zone: Rect) -> Survol {
+    match (dans(curseur, barre) && chevauche(barre, zone), dans(curseur, poignee), avant) {
         (false, _, _) => Survol::Normale,
         (true, true, _) => Survol::Rendue,
         (true, false, Survol::Rendue) => Survol::Rendue,
@@ -901,14 +942,18 @@ fn survol(avant: Survol, curseur: (i32, i32), barre: Rect, poignee: Rect) -> Sur
 /// Un tour de survol : au changement seulement, la barre devient traversante
 /// ou non, et la page l'apprend.
 // ponytail: curseur lu 20 fois par seconde, un crochet souris global si le cout se voit.
-fn suivre_survol(app: &tauri::AppHandle, avant: Survol) -> Survol {
+/// Le dessin ouvert, la barre est remise devant lui : on la clique toujours.
+fn suivre_survol(app: &tauri::AppHandle, avant: Survol, zone: Rect) -> Survol {
     let Some(barre) = app.get_webview_window(ETIQUETTE_BARRE) else { return avant };
+    if app.get_webview_window(ETIQUETTE_DESSIN).is_some() {
+        fenetres::devant(&barre);
+    }
     let (Some(curseur), Ok(pos), Ok(taille), Ok(echelle)) = (fenetres::curseur(), barre.outer_position(), barre.outer_size(), barre.scale_factor()) else {
         return avant;
     };
     let rect = (pos.x, pos.y, taille.width as i32, taille.height as i32);
     let poignee = (pos.x, pos.y, (POIGNEE_CSS * echelle).round() as i32, taille.height as i32);
-    let nouveau = survol(avant, curseur, rect, poignee);
+    let nouveau = survol(avant, curseur, rect, poignee, zone);
     if nouveau != avant {
         fenetres::traversante(&barre, nouveau == Survol::Effacee);
         let _ = app.emit_to(ETIQUETTE_BARRE, EVENEMENT_SURVOL, nouveau);
@@ -973,11 +1018,14 @@ fn decompter_puis_filmer(app: tauri::AppHandle, numero: u64, demande: Demande) {
     loop {
         dire_etat(&app);
         std::thread::sleep(Duration::from_millis(50));
-        etat_survol = suivre_survol(&app, etat_survol);
-        let (actif, erreur) = match tenir(&app.state::<EtatVideo>().en_cours).as_ref().filter(|e| e.numero == numero) {
-            Some(e) => e.enreg.as_ref().map_or((0, None), |enreg| (enreg.actif_ms(), enreg.erreur())),
+        let (actif, erreur, zone) = match tenir(&app.state::<EtatVideo>().en_cours).as_ref().filter(|e| e.numero == numero) {
+            Some(e) => {
+                let (actif, erreur) = e.enreg.as_ref().map_or((0, None), |enreg| (enreg.actif_ms(), enreg.erreur()));
+                (actif, erreur, e.zone_bureau)
+            }
             None => return,
         };
+        etat_survol = suivre_survol(&app, etat_survol, zone);
         // Une erreur du moteur, ou le plafond : on arrete et on garde ce qui est filme.
         if erreur.is_some() || actif >= PLAFOND_MS {
             arreter_detache(&app);
@@ -1437,6 +1485,7 @@ mod tests {
             direct: None,
             raccourcis: Vec::new(),
             raccourcis_lisibles: Default::default(),
+            outil: OutilSouris::Souris,
         }
     }
 
@@ -1500,27 +1549,38 @@ mod tests {
 
     const B: Rect = (100, 100, 400, 52);
     const P: Rect = (100, 100, 96, 52);
+    /// L'ecran entier filme : la barre est dedans.
+    const Z: Rect = (0, 0, 1920, 1080);
 
     #[test]
     fn survol_hors_poignee_efface() {
-        assert_eq!(survol(Survol::Normale, (300, 120), B, P), Survol::Effacee);
+        assert_eq!(survol(Survol::Normale, (300, 120), B, P, Z), Survol::Effacee);
     }
 
     #[test]
     fn poignee_rend_et_la_barre_reste_rendue_jusqu_a_la_sortie() {
-        let s = survol(Survol::Effacee, (120, 120), B, P);
+        let s = survol(Survol::Effacee, (120, 120), B, P, Z);
         assert_eq!(s, Survol::Rendue);
         // de la poignee vers « Arreter » : toujours rendue
-        assert_eq!(survol(s, (480, 120), B, P), Survol::Rendue);
+        assert_eq!(survol(s, (480, 120), B, P, Z), Survol::Rendue);
         // sortie : normale ; retour hors poignee : effacee
-        let dehors = survol(Survol::Rendue, (50, 50), B, P);
+        let dehors = survol(Survol::Rendue, (50, 50), B, P, Z);
         assert_eq!(dehors, Survol::Normale);
-        assert_eq!(survol(dehors, (300, 120), B, P), Survol::Effacee);
+        assert_eq!(survol(dehors, (300, 120), B, P, Z), Survol::Effacee);
     }
 
     #[test]
     fn bords_exclus() {
-        assert_eq!(survol(Survol::Normale, (500, 120), B, P), Survol::Normale);
+        assert_eq!(survol(Survol::Normale, (500, 120), B, P, Z), Survol::Normale);
+    }
+
+    #[test]
+    fn hors_de_la_zone_la_barre_ne_s_efface_jamais() {
+        // La zone s'arrete juste au-dessus de la barre (barre posee dessous) : elle reste entiere.
+        let zone = (100, 0, 400, 100);
+        assert_eq!(survol(Survol::Normale, (300, 120), B, P, zone), Survol::Normale);
+        // Glissee dedans, d'un pixel : elle s'efface de nouveau.
+        assert_eq!(survol(Survol::Normale, (300, 120), B, P, (100, 0, 400, 101)), Survol::Effacee);
     }
 
     #[test]

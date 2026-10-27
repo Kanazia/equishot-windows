@@ -167,6 +167,21 @@ pub fn sans_menu_alt<R: tauri::Runtime>(fenetre: &tauri::WebviewWindow<R>) {
     let _ = fenetre;
 }
 
+/// Remet `fenetre` en tete de la couche « toujours devant », sans l'activer ni
+/// attendre son fil : la barre de la video au-dessus du dessin (0.24), qui passe
+/// devant elle chaque fois qu'il prend le premier plan.
+pub fn devant<R: tauri::Runtime>(fenetre: &tauri::WebviewWindow<R>) {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{SetWindowPos, HWND_TOPMOST, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE};
+        let Ok(poignee) = fenetre.hwnd() else { return };
+        // SAFETY: poignee d'une fenetre de ce processus ; l'appel se poste a son fil sans l'attendre.
+        unsafe { SetWindowPos(poignee.0 as _, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS) };
+    }
+    #[cfg(not(windows))]
+    let _ = fenetre;
+}
+
 /// Barre d'enregistrement : non activable (`true`), puis traversante ou non au survol.
 /// Pas par `set_focusable` ni `set_ignore_cursor_events` : leur `apply_diff` (tao 0.35.3,
 /// `window_state.rs:325-424`) fait `SW_HIDE` sur une fenetre que tao croit cachee et

@@ -191,7 +191,7 @@ pub fn run() {
             video::video_pauser,
             video::video_effet,
             video::video_dessin,
-            video::video_dessin_basculer,
+            video::video_outil,
             video::video_etat,
             video::video_reglages,
             video::video_regler,

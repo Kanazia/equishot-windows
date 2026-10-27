@@ -5,7 +5,7 @@
 
 use std::collections::VecDeque;
 
-use super::effets::{Couleur, Onde, Projecteur, Scene, Segment, Touches};
+use super::effets::{pinceau, Couleur, Onde, Projecteur, Scene, Segment, Touches};
 
 pub const JAUNE: Couleur = Couleur(1.0, 196.0 / 255.0, 0.0);
 pub const BLEU: Couleur = Couleur(61.0 / 255.0, 155.0 / 255.0, 1.0);
@@ -327,19 +327,22 @@ impl Animateur {
                 Onde { x, y, rayon: (ONDE_DE + (ONDE_A - ONDE_DE) * adoucir(p)) * e, epaisseur: ONDE_EPAISSEUR * e, opacite: 1.0 - p as f32, couleur }
             })
             .collect();
-        let segments = self
-            .points
-            .iter()
-            .zip(self.points.iter().skip(1))
-            .filter(|(a, b)| a.trait_ == b.trait_)
-            .map(|(a, b)| Segment {
-                de: (a.x, a.y),
-                a: (b.x, b.y),
-                epaisseur: TRAINEE_EPAISSEUR * e,
-                opacite: (1.0 - (t - a.t) / TRAINEE_S).clamp(0.0, 1.0) as f32,
-                couleur: JAUNE,
-            })
-            .collect();
+        // 0.24 : chaque glisse a l'epaisseur du pinceau d'encre de Chine.
+        let mut segments = Vec::new();
+        let points: Vec<&Point> = self.points.iter().collect();
+        for glisse in points.chunk_by(|a, b| a.trait_ == b.trait_) {
+            let largeurs = pinceau(&glisse.iter().map(|p| (p.x, p.y, p.t)).collect::<Vec<_>>(), TRAINEE_EPAISSEUR * e);
+            for (i, paire) in glisse.windows(2).enumerate() {
+                let (a, b) = (paire[0], paire[1]);
+                segments.push(Segment {
+                    de: (a.x, a.y),
+                    a: (b.x, b.y),
+                    epaisseur: (largeurs[i] + largeurs[i + 1]) / 2.0,
+                    opacite: (1.0 - (t - a.t) / TRAINEE_S).clamp(0.0, 1.0) as f32,
+                    couleur: JAUNE,
+                });
+            }
+        }
         let force = self.zoom.valeur(t);
         let centre = match self.centre {
             Some(c) if force > 0.0 => {
@@ -547,6 +550,19 @@ mod tests {
         let s = a.scene(0.75).segments;
         assert_eq!(s.iter().map(|s| (s.de.0, s.a.0)).collect::<Vec<_>>(), vec![(20.0, 30.0), (30.0, 40.0)], "rien de neuf au clic droit");
         assert!(a.scene(1.01).segments.is_empty(), "effacee 0,6 s apres");
+    }
+
+    #[test]
+    fn la_trainee_a_la_forme_du_pinceau() {
+        let mut a = animateur(false, true);
+        a.recevoir(ev(0.0, 0.0, 0.0, Geste::Appui(Bouton::Gauche)));
+        for i in 1..40 {
+            a.recevoir(ev(i as f64 * 0.01, i as f32 * 3.0, 0.0, Geste::Bouge));
+        }
+        let s = a.scene(0.4).segments;
+        let (bout, milieu) = (s[0].epaisseur, s[s.len() / 2].epaisseur);
+        assert!(bout < milieu * 0.6, "effilee au depart : {bout} contre {milieu}");
+        assert!(milieu > 6.0, "lente, elle s'epaissit : {milieu}");
     }
 
     #[test]

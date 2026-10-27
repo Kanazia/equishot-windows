@@ -354,10 +354,6 @@ impl Direct {
         }
     }
 
-    pub fn dessin_ouvert(&self) -> bool {
-        self.dessin
-    }
-
     pub fn basculer_zoom(&mut self) -> bool {
         let t = self.maintenant(Instant::now());
         self.animateur.basculer_zoom(t)

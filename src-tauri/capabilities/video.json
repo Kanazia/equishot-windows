@@ -3,5 +3,5 @@
   "identifier": "video",
   "description": "Barre d'enregistrement video et bulle de camera",
   "windows": ["video-barre", "video-camera", "video-dessin"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "core:window:allow-start-dragging"]
 }

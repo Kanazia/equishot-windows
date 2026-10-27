@@ -303,10 +303,10 @@ export interface EtatBarre {
   cameras: Camera[];
   /** Mise en scène : ce qui est filmé (0.19). */
   cible: CibleScene | null;
-  /** Le zoom et le projecteur allumés (0.22), le dessin ouvert (0.23), et leurs raccourcis lisibles. */
+  /** Le zoom et le projecteur allumés (0.22), l'outil de la souris (0.24), et les raccourcis lisibles. */
   zoom: boolean;
   projecteur: boolean;
-  dessin: boolean;
+  outil: OutilSouris;
   raccourcisEffets: [string, string, string];
 }
 
@@ -356,12 +356,23 @@ export interface ReglagesVideo {
 /** Les touches montrées dans la vidéo (0.23). */
 export type ModeTouches = "aucune" | "raccourcis" | "toutes";
 
-/** Un trait dessiné pendant la prise (0.23), en pixels physiques de la zone filmée. */
+/**
+ * L'outil de la souris pendant la prise (0.24) : la souris clique l'application filmée ;
+ * le pointeur (encre qui s'efface) et le crayon (encre qui reste) gardent le clic.
+ */
+export type OutilSouris = "souris" | "pointeur" | "crayon";
+
+/**
+ * Un trait dessiné pendant la prise (0.23), en pixels physiques de la zone filmée.
+ * 0.24 : l'épaisseur du pinceau à chaque point du stylo, et l'opacité du pointeur qui s'efface.
+ */
 export interface TraitDessin {
   outil: "stylo" | "fleche" | "rectangle";
   couleur: [number, number, number];
   epaisseur: number;
   points: [number, number][];
+  largeurs?: number[];
+  opacite?: number;
 }
 
 /** L'écran d'une scène (0.19) : nom Windows (`\\.\DISPLAY1`), coin et taille en pixels physiques. */
@@ -420,8 +431,9 @@ export const videoAbandonner = () => invoke<void>("video_abandonner");
 export const videoPauser = (pause: boolean) => invoke<void>("video_pauser", { pause });
 /** Les boutons de la barre (0.22) : bascule le zoom (`true`) ou le projecteur. */
 export const videoEffet = (zoom: boolean) => invoke<void>("video_effet", { zoom });
-/** Le dessin à l'écran (0.23) : ouvre ou ferme sa fenêtre, et lui envoie ses traits. */
-export const videoDessinBasculer = () => invoke<void>("video_dessin_basculer");
+/** L'outil de la souris (0.24) : `souris` ferme le dessin, `pointeur` et `crayon` l'ouvrent. */
+export const videoOutil = (outil: OutilSouris) => invoke<void>("video_outil", { outil });
+/** Le dessin à l'écran (0.23) : lui envoie ses traits. */
 export const videoDessin = (traits: TraitDessin[]) => invoke<void>("video_dessin", { traits });
 export const videoEtat = () => invoke<EtatBarre>("video_etat");
 export const videoReglages = () => invoke<ReglagesVideo>("video_reglages");
@@ -433,6 +445,11 @@ export const videoGif = (id: number) => invoke<string>("video_gif", { id });
 
 export function surEtatVideo(handler: (etat: EtatBarre) => void): Promise<UnlistenFn> {
   return listen<EtatBarre>("video://etat", (evenement) => handler(evenement.payload));
+}
+
+/** La page du dessin (0.24) : l'outil qui a pris la main, pointeur ou crayon. */
+export function surOutilVideo(handler: (outil: OutilSouris) => void): Promise<UnlistenFn> {
+  return listen<OutilSouris>("video://outil", (evenement) => handler(evenement.payload));
 }
 
 export function surSurvolVideo(handler: (survol: Survol) => void): Promise<UnlistenFn> {

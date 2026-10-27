@@ -1,13 +1,15 @@
 /**
  * La barre d'enregistrement vidéo (ADR-016, ADR-017). Elle s'ouvre en panneau
  * de mise en scène (`Preparation`), puis devient la barre : le décompte, puis la
- * durée filmée, le zoom et le projecteur (0.22), le dessin (0.23), « Pause » / « Reprendre »,
- * « Arrêter », « Abandonner ». Rust la
+ * durée filmée, les outils de la souris (0.24 : souris, pointeur, crayon), le zoom et le
+ * projecteur (0.22), « Pause » / « Reprendre », « Arrêter », « Abandonner ». Rust la
  * rend invisible aux captures (`content_protected`) et, une fois lancée, non
  * focalisable : un clic ici laisse le premier plan à l'application filmée.
- * Survolée, elle s'efface et laisse passer les clics, sauf sa poignée (le point
- * et la durée) : Rust suit le curseur et l'annonce (`video://survol`).
+ * Posée sur la zone filmée (l'écran entier, ou glissée dedans), elle s'efface au survol
+ * et laisse passer les clics, sauf sa poignée (de quoi la déplacer, le point et la durée) :
+ * Rust suit le curseur et l'annonce (`video://survol`). Hors de la zone, elle reste entière.
  */
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useState } from "react";
 import ReactDOM from "react-dom/client";
 
@@ -23,11 +25,12 @@ import {
   surSurvolVideo,
   videoAbandonner,
   videoArreter,
-  videoDessinBasculer,
   videoEffet,
   videoEtat,
+  videoOutil,
   videoPauser,
   type EtatBarre,
+  type OutilSouris,
   type Survol,
 } from "@/lib/captures-api";
 import { cn } from "@/lib/utils";
@@ -62,6 +65,13 @@ function BasculeEffet(props: { testid: string; icone: string; nom: string; racco
   );
 }
 
+/** Les outils de la souris (0.24) : un seul à la fois. Le crayon garde le raccourci du dessin. */
+const OUTILS: { outil: OutilSouris; icone: string; nom: string; aide: string }[] = [
+  { outil: "souris", icone: "arrow_selector_tool", nom: "Souris", aide: "les clics vont à l'application filmée" },
+  { outil: "pointeur", icone: "stylus_laser_pointer", nom: "Pointeur", aide: "une encre qui s'efface, sans rien cliquer dessous" },
+  { outil: "crayon", icone: "draw", nom: "Crayon", aide: "une encre qui reste jusqu'à Échap" },
+];
+
 function Barre() {
   const [etat, setEtat] = useState<EtatBarre>({
     phase: "prepare",
@@ -74,7 +84,7 @@ function Barre() {
     cible: null,
     zoom: false,
     projecteur: false,
-    dessin: false,
+    outil: "souris",
     raccourcisEffets: ["", "", ""],
   });
   const [survol, setSurvol] = useState<Survol>("normale");
@@ -120,8 +130,20 @@ function Barre() {
           effacee ? "border-transparent bg-transparent shadow-none" : "border-outline bg-surface/95",
         )}
       >
-        {/* La poignée : 96 px CSS à gauche (`POIGNEE_CSS` de Rust), jamais effacée. */}
-        <div data-testid="barre-poignee" className={cn("flex h-full w-[94px] shrink-0 items-center gap-2 rounded-full pl-3", effacee && "bg-surface/95")}>
+        {/* La poignée : 112 px CSS à gauche (`POIGNEE_CSS` de Rust), jamais effacée. */}
+        <div data-testid="barre-poignee" className={cn("flex h-full w-[110px] shrink-0 items-center gap-1.5 rounded-full pl-1", effacee && "bg-surface/95")}>
+          <span
+            data-testid="barre-deplacer"
+            role="button"
+            aria-label="Déplacer la barre"
+            title="Déplacer la barre"
+            onPointerDown={(e) => {
+              if (e.button === 0) getCurrentWindow().startDragging().catch((err) => setErreur(errorText(err)));
+            }}
+            className="flex h-9 w-5 shrink-0 cursor-grab items-center justify-center rounded-full text-muted transition-colors duration-150 hover:text-on-surface active:cursor-grabbing"
+          >
+            <Icon name="drag_indicator" size={16} />
+          </span>
           {etat.phase === "decompte" ? (
             <span data-testid="barre-decompte" className="shrink-0 text-[13px] font-medium whitespace-nowrap text-on-surface tabular-nums">
               Départ dans {etat.reste}
@@ -147,6 +169,30 @@ function Barre() {
           </p>
           {etat.phase !== "decompte" && (
             <>
+              <div role="radiogroup" aria-label="Outil de la souris" data-testid="barre-outils" className="flex h-9 shrink-0 items-center gap-0.5 rounded-full bg-surface-high/70 p-0.5">
+                {OUTILS.map(({ outil, icone, nom, aide }) => {
+                  const choisi = etat.outil === outil;
+                  const raccourci = outil === "crayon" && etat.raccourcisEffets[2] ? ` (${etat.raccourcisEffets[2]})` : "";
+                  return (
+                    <button
+                      key={outil}
+                      type="button"
+                      role="radio"
+                      data-testid={`barre-outil-${outil}`}
+                      aria-checked={choisi}
+                      aria-label={nom}
+                      title={`${nom}${raccourci} : ${aide}`}
+                      onClick={() => void videoOutil(outil).catch((e) => setErreur(errorText(e)))}
+                      className={cn(
+                        "flex size-8 items-center justify-center rounded-full transition-[transform,background-color,color] duration-150 active:scale-[0.97]",
+                        choisi ? "bg-primary/15 text-primary" : "eq-hover text-on-surface",
+                      )}
+                    >
+                      <Icon name={icone} size={17} filled={choisi} />
+                    </button>
+                  );
+                })}
+              </div>
               <BasculeEffet
                 testid="barre-zoom"
                 icone="zoom_in"
@@ -163,15 +209,6 @@ function Barre() {
                 raccourci={etat.raccourcisEffets[1]}
                 allume={etat.projecteur}
                 onClick={() => void videoEffet(false).catch((e) => setErreur(errorText(e)))}
-                classe={bouton}
-              />
-              <BasculeEffet
-                testid="barre-dessin"
-                icone="draw"
-                nom="Dessiner"
-                raccourci={etat.raccourcisEffets[2]}
-                allume={etat.dessin}
-                onClick={() => void videoDessinBasculer().catch((e) => setErreur(errorText(e)))}
                 classe={bouton}
               />
             </>

@@ -19,7 +19,7 @@ use windows62::Win32::Graphics::Direct2D::{
     D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1, D2D1_BUFFER_PRECISION_8BPC_UNORM,
     D2D1_CAP_STYLE_ROUND, D2D1_COLOR_SPACE_SRGB, D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_ELLIPSE, D2D1_EXTEND_MODE_CLAMP, D2D1_FACTORY_TYPE_MULTI_THREADED,
     D2D1_INTERPOLATION_MODE_LINEAR, D2D1_LINE_JOIN_ROUND, D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES, D2D1_STROKE_STYLE_PROPERTIES, D2D1_DRAW_TEXT_OPTIONS_NONE,
-    D2D1_ROUNDED_RECT,
+    D2D1_ROUNDED_RECT, ID2D1Layer, D2D1_LAYER_OPTIONS1_NONE, D2D1_LAYER_PARAMETERS1, D2D1_PRIMITIVE_BLEND_MAX, D2D1_PRIMITIVE_BLEND_SOURCE_OVER,
 };
 use windows62::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat, DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
@@ -87,13 +87,57 @@ pub enum Outil {
 
 /// Un trait dessine pendant la prise, envoye par la page du dessin : ses points en
 /// pixels de la zone filmee (le stylo en a autant qu'il veut, la fleche et le
-/// rectangle deux : depart et arrivee).
+/// rectangle deux : depart et arrivee). 0.24 : le stylo porte l'epaisseur du pinceau
+/// a chaque point (`largeurs`, calculee par la page), et le pointeur s'efface (`opacite`).
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 pub struct Trait {
     pub outil: Outil,
     pub couleur: (f32, f32, f32),
     pub epaisseur: f32,
     pub points: Vec<(f32, f32)>,
+    #[serde(default)]
+    pub largeurs: Option<Vec<f32>>,
+    #[serde(default = "opaque")]
+    pub opacite: f32,
+}
+
+fn opaque() -> f32 {
+    1.0
+}
+
+/// Le pinceau d'encre de Chine (0.24, ADR-024) : l'epaisseur a chaque point d'un
+/// trace `(x, y, secondes)`. Lent, le trait s'epaissit jusqu'a 1,9 fois `base` ;
+/// rapide, il s'affine jusqu'a 0,3 fois ; l'epaisseur suit avec un peu de retard,
+/// comme l'encre. Il s'effile sur 2 `base` au depart (le pinceau pose) et sur 8 a
+/// l'arrivee (le pinceau leve).
+/// Meme calcul que `pinceau` de `src/dessin/pinceau.ts` : les deux se changent ensemble.
+pub fn pinceau(points: &[(f32, f32, f64)], base: f32) -> Vec<f32> {
+    let n = points.len();
+    if n < 2 {
+        return vec![base; n];
+    }
+    let pas: Vec<f32> = points.windows(2).map(|p| (p[1].0 - p[0].0).hypot(p[1].1 - p[0].1)).collect();
+    let cible = |i: usize| {
+        let j = i.max(1);
+        let vitesse = pas[j - 1] / (points[j].2 - points[j - 1].2).max(0.004) as f32;
+        base * (0.3 + 1.6 * (-vitesse / (150.0 * base)).exp())
+    };
+    let mut largeurs = Vec::with_capacity(n);
+    let mut w = cible(0);
+    for i in 0..n {
+        w += 0.35 * (cible(i) - w);
+        largeurs.push(w);
+    }
+    let total: f32 = pas.iter().sum();
+    let mut parcouru = 0.0;
+    for (i, w) in largeurs.iter_mut().enumerate() {
+        if i > 0 {
+            parcouru += pas[i - 1];
+        }
+        let f = (parcouru / (2.0 * base)).min((total - parcouru) / (8.0 * base)).clamp(0.0, 1.0);
+        *w *= 0.25 + 0.75 * f.sqrt();
+    }
+    largeurs
 }
 
 /// Les touches frappees, en bas de l'image (0.23).
@@ -138,6 +182,19 @@ pub fn transformation(zoom: (f32, f32, f32), l: f32, h: f32) -> Matrix3x2 {
 
 fn couleur(c: Couleur, a: f32) -> D2D1_COLOR_F {
     D2D1_COLOR_F { r: c.0, g: c.1, b: c.2, a }
+}
+
+/// Un calque sans bornes ni masque, pose a `opacite`.
+fn calque(opacite: f32) -> D2D1_LAYER_PARAMETERS1 {
+    D2D1_LAYER_PARAMETERS1 {
+        contentBounds: D2D_RECT_F { left: -f32::MAX, top: -f32::MAX, right: f32::MAX, bottom: f32::MAX },
+        geometricMask: std::mem::ManuallyDrop::new(None),
+        maskAntialiasMode: D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+        maskTransform: Matrix3x2::identity(),
+        opacity: opacite,
+        opacityBrush: std::mem::ManuallyDrop::new(None),
+        layerOptions: D2D1_LAYER_OPTIONS1_NONE,
+    }
 }
 
 fn v(p: (f32, f32)) -> Vector2 {
@@ -230,19 +287,35 @@ impl Compositeur {
                 )?;
                 ctx.FillRectangle(&D2D_RECT_F { left: 0.0, top: 0.0, right: l, bottom: h }, &degrade);
             }
-            for s in &scene.segments {
-                self.pinceau.SetColor(&couleur(s.couleur, s.opacite));
-                ctx.DrawLine(v(s.de), v(s.a), &self.pinceau, s.epaisseur, &self.rond);
+            // Un trait fait de segments a bouts ronds : chaque jointure est peinte deux fois. A
+            // travers, elle fonce, et le trait s'efface en perles. La traînée, dont l'opacite varie
+            // le long du trait, garde au recouvrement la plus forte (MAX) dans un calque a part ;
+            // un trait, d'une seule opacite, est dessine opaque dans un calque pose a cette opacite.
+            if !scene.segments.is_empty() {
+                ctx.PushLayer(&calque(1.0), None::<&ID2D1Layer>);
+                ctx.SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_MAX);
+                for s in &scene.segments {
+                    self.pinceau.SetColor(&couleur(s.couleur, s.opacite));
+                    ctx.DrawLine(v(s.de), v(s.a), &self.pinceau, s.epaisseur, &self.rond);
+                }
+                ctx.SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_SOURCE_OVER);
+                ctx.PopLayer();
             }
             for t in &scene.traits {
                 let (r, g, b) = t.couleur;
+                let a_travers = t.opacite < 1.0;
+                if a_travers {
+                    ctx.PushLayer(&calque(t.opacite), None::<&ID2D1Layer>);
+                }
                 self.pinceau.SetColor(&couleur(Couleur(r, g, b), 1.0));
                 match (t.outil, t.points.as_slice()) {
                     (_, []) => {}
                     (Outil::Stylo, [p]) => ctx.DrawLine(v(*p), v(*p), &self.pinceau, t.epaisseur, &self.rond),
                     (Outil::Stylo, points) => {
-                        for paire in points.windows(2) {
-                            ctx.DrawLine(v(paire[0]), v(paire[1]), &self.pinceau, t.epaisseur, &self.rond);
+                        let largeurs = t.largeurs.as_deref().filter(|l| l.len() == points.len());
+                        for (i, paire) in points.windows(2).enumerate() {
+                            let e = largeurs.map_or(t.epaisseur, |l| (l[i] + l[i + 1]) / 2.0);
+                            ctx.DrawLine(v(paire[0]), v(paire[1]), &self.pinceau, e, &self.rond);
                         }
                     }
                     (_, [_]) => {}
@@ -256,6 +329,9 @@ impl Compositeur {
                             ctx.DrawLine(v(*a), v(bout), &self.pinceau, t.epaisseur, &self.rond);
                         }
                     }
+                }
+                if a_travers {
+                    ctx.PopLayer();
                 }
             }
             for o in &scene.ondes {
@@ -370,6 +446,46 @@ mod tests {
         let t: Trait = serde_json::from_str(r#"{"outil":"fleche","couleur":[1,0,0],"epaisseur":4,"points":[[1,2],[30,40]]}"#).expect("trait lu");
         assert_eq!(t.outil, Outil::Fleche);
         assert_eq!(t.points, vec![(1.0, 2.0), (30.0, 40.0)]);
+        assert_eq!((t.largeurs, t.opacite), (None, 1.0), "un trait de la 0.23 reste lisible");
+        let t: Trait = serde_json::from_str(r#"{"outil":"stylo","couleur":[1,0,0],"epaisseur":4,"points":[[1,2],[3,4]],"largeurs":[2,5],"opacite":0.5}"#).expect("trait lu");
+        assert_eq!((t.largeurs, t.opacite), (Some(vec![2.0, 5.0]), 0.5));
+    }
+
+    /// Un trace droit vers la droite, `n` points a `vitesse` px/s, un toutes les 10 ms.
+    fn trace(n: usize, vitesse: f32) -> Vec<(f32, f32, f64)> {
+        (0..n).map(|i| (i as f32 * vitesse * 0.01, 0.0, i as f64 * 0.01)).collect()
+    }
+
+    #[test]
+    fn le_pinceau_epaissit_le_lent_et_affine_le_rapide() {
+        let milieu = |v: f32| pinceau(&trace(60, v), 6.0)[30];
+        let (lent, rapide) = (milieu(150.0), milieu(4000.0));
+        assert!(lent > 9.0 && lent <= 11.4, "lent : {lent}");
+        assert!(rapide < 3.0 && rapide >= 1.8, "rapide : {rapide}");
+    }
+
+    #[test]
+    fn le_pinceau_s_effile_aux_deux_bouts() {
+        let l = pinceau(&trace(60, 600.0), 6.0);
+        let milieu = l[30];
+        assert!(l[0] < milieu * 0.3 && l[59] < milieu * 0.3, "bouts {} et {}, milieu {milieu}", l[0], l[59]);
+        assert!(l[1] > l[0] && l[58] > l[59], "il s'ouvre puis se referme");
+    }
+
+    #[test]
+    fn le_pinceau_de_la_page_rend_les_memes_epaisseurs() {
+        // Les memes valeurs que `tests/unit/video-pinceau.test.mjs` : la page et le moteur dessinent pareil.
+        let l = pinceau(&[(0.0, 0.0, 0.0), (3.0, 0.0, 0.01), (9.0, 0.0, 0.02), (20.0, 0.0, 0.03), (24.0, 0.0, 0.04)], 6.0);
+        let arrondi: Vec<f32> = l.iter().map(|w| (w * 1000.0).round() / 1000.0).collect();
+        assert_eq!(arrondi, vec![2.17, 5.424, 5.352, 3.18, 1.804]);
+    }
+
+    #[test]
+    fn le_pinceau_garde_un_point_seul_et_l_immobile() {
+        assert_eq!(pinceau(&[(1.0, 1.0, 0.0)], 6.0), vec![6.0]);
+        assert!(pinceau(&[], 6.0).is_empty());
+        // Deux points au meme instant : pas de vitesse infinie, pas de NaN.
+        assert!(pinceau(&[(0.0, 0.0, 0.0), (50.0, 0.0, 0.0)], 6.0).iter().all(|w| w.is_finite() && *w > 0.0));
     }
 
     #[test]

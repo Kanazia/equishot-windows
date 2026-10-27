@@ -1,13 +1,13 @@
 {
   "name": "equishot",
   "private": true,
-  "version": "0.23.0",
+  "version": "0.24.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "verify": "tsc --noEmit && vite build && node --experimental-strip-types --test tests/unit/captures-formes.test.mjs tests/unit/captures-orientation.test.mjs tests/unit/captures-frappe.test.mjs tests/unit/video-preparation.test.mjs tests/unit/video-bulle.test.mjs tests/unit/video-scenes.test.mjs tests/unit/captures-defilante.test.mjs tests/unit/publication.test.mjs && cd src-tauri && cargo test",
-    "test:unit": "node --experimental-strip-types --test tests/unit/captures-formes.test.mjs tests/unit/captures-orientation.test.mjs tests/unit/captures-frappe.test.mjs tests/unit/video-preparation.test.mjs tests/unit/video-bulle.test.mjs tests/unit/video-scenes.test.mjs tests/unit/captures-defilante.test.mjs tests/unit/publication.test.mjs",
+    "verify": "tsc --noEmit && vite build && node --experimental-strip-types --test tests/unit/captures-formes.test.mjs tests/unit/captures-orientation.test.mjs tests/unit/captures-frappe.test.mjs tests/unit/video-preparation.test.mjs tests/unit/video-bulle.test.mjs tests/unit/video-scenes.test.mjs tests/unit/video-pinceau.test.mjs tests/unit/captures-defilante.test.mjs tests/unit/publication.test.mjs && cd src-tauri && cargo test",
+    "test:unit": "node --experimental-strip-types --test tests/unit/captures-formes.test.mjs tests/unit/captures-orientation.test.mjs tests/unit/captures-frappe.test.mjs tests/unit/video-preparation.test.mjs tests/unit/video-bulle.test.mjs tests/unit/video-scenes.test.mjs tests/unit/video-pinceau.test.mjs tests/unit/captures-defilante.test.mjs tests/unit/publication.test.mjs",
     "tauri": "tauri"
   },
   "dependencies": {
