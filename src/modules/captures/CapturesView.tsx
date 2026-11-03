@@ -36,6 +36,7 @@ import { dernierFond, PanneauFond } from "@/modules/captures/Fond";
 import { composer, orienterFormes, orienterZone, tailleOrientee, tailleRendu, type Bouton } from "@/modules/captures/formes";
 import { Recadrage } from "@/modules/captures/Recadrage";
 import { Touches } from "@/modules/captures/Touches";
+import { useVisionneuse } from "@/modules/captures/Visionneuse";
 
 /** Clé de cache de l'état du raccourci, partagée avec la rangée des Réglages. */
 export const CLE_RACCOURCI = ["captures-raccourci"] as const;
@@ -404,6 +405,30 @@ export function CapturesView({ onReglages }: { onReglages: () => void }) {
 }
 
 /** La fiche d'une capture : image annotée, note, origine, et ses quatre gestes. */
+/** L'image de la fiche, zoomable à la molette ; glisser déplace la vue zoomée. */
+function ImageFiche({ capture }: { capture: Capture }) {
+  const vision = useVisionneuse({ largeur100: tailleRendu(capture).largeur / (capture.echelle || 1), glisserGauche: true });
+  return (
+    <div
+      ref={vision.cadre}
+      {...vision.surCadre}
+      data-testid="capture-visionneuse"
+      className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-lg border border-outline bg-surface-low"
+    >
+      <img
+        ref={vision.contenu}
+        src={adresse(capture.rendu, capture.modifieLe)}
+        alt={`Capture de ${capture.fenetre || "l'écran"}`}
+        data-testid="capture-image"
+        draggable={false}
+        style={vision.style}
+        className="max-h-full max-w-full object-contain"
+      />
+      {vision.ajuster}
+    </div>
+  );
+}
+
 function Fiche({ initiale, editionInitiale = false, onFermer }: { initiale: Capture; editionInitiale?: boolean; onFermer: () => void }) {
   const queryClient = useQueryClient();
   // Remplacée par ce que rend la réédition : c'est elle qui date l'image à recharger.
@@ -478,6 +503,12 @@ function Fiche({ initiale, editionInitiale = false, onFermer }: { initiale: Capt
     <DialogContent
       data-testid="capture-fiche"
       className="top-2 left-2 flex h-[calc(100dvh-1rem)] w-[calc(100vw-1rem)] max-w-none translate-x-0 translate-y-0 flex-col gap-3 sm:max-w-none"
+      // Radix lit Échap au niveau du document, avant le champ : dans le texte d'une annotation,
+      // Échap annule ce texte, il ne ferme pas la fiche (et ne perd pas la modification en cours).
+      onEscapeKeyDown={(evenement) => {
+        const cible = evenement.target;
+        if (cible instanceof HTMLInputElement && cible.closest('[data-testid="capture-reedition"]')) evenement.preventDefault();
+      }}
     >
       <DialogHeader>
         <DialogTitle className="pr-8 text-[14px]">
@@ -530,8 +561,8 @@ function Fiche({ initiale, editionInitiale = false, onFermer }: { initiale: Capt
         />
       ) : (
         <>
-          <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-lg border border-outline bg-surface-low">
-            {video ? (
+          {video ? (
+            <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-lg border border-outline bg-surface-low">
               <video
                 src={adresse(capture.origine, capture.modifieLe)}
                 poster={adresse(capture.rendu, capture.modifieLe)}
@@ -540,15 +571,10 @@ function Fiche({ initiale, editionInitiale = false, onFermer }: { initiale: Capt
                 data-testid="capture-video"
                 className="max-h-full max-w-full"
               />
-            ) : (
-              <img
-                src={adresse(capture.rendu, capture.modifieLe)}
-                alt={`Capture de ${capture.fenetre || "l'écran"}`}
-                data-testid="capture-image"
-                className="max-h-full max-w-full object-contain"
-              />
-            )}
-          </div>
+            </div>
+          ) : (
+            <ImageFiche capture={capture} />
+          )}
           <Textarea
             value={note}
             onChange={(evenement) => {
@@ -754,19 +780,27 @@ function Reedition({ capture, onFini }: { capture: Capture; onFini: (modifiee: C
   }
 
   const ratio = taille.largeur / taille.hauteur;
+  const vision = useVisionneuse({ largeur100: taille.largeur / echelle });
   return (
     <div className="flex min-h-0 flex-1 flex-col items-center gap-3" data-testid="capture-reedition">
       {/* Un conteneur de taille : l'image le remplit (cqw, cqh) sans dépasser sa taille réelle. */}
+      {/* Zoom à la molette ; le bouton du milieu déplace la vue, le gauche reste aux outils. */}
       <div
-        className="flex min-h-0 w-full flex-1 items-center justify-center overflow-hidden rounded-lg border border-outline bg-surface-low"
+        ref={vision.cadre}
+        {...vision.surCadre}
+        data-testid="reedition-visionneuse"
+        className="relative flex min-h-0 w-full flex-1 items-center justify-center overflow-hidden rounded-lg border border-outline bg-surface-low"
         style={{ containerType: "size" }}
       >
+        {vision.ajuster}
         {image && (
           <div
+            ref={vision.contenu}
             className="relative"
             style={{
               aspectRatio: `${taille.largeur} / ${taille.hauteur}`,
               width: `min(100cqw, calc(100cqh * ${ratio}), ${taille.largeur / echelle}px)`,
+              ...vision.style,
             }}
           >
             <Annotation

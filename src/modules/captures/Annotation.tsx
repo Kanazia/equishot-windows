@@ -424,7 +424,9 @@ export function Annotation({ ref, image, zone, echelle, edition, orientation = 0
             edition.poser([...formes, { type: "tampon", x: net(position.x), y: net(position.y), symbole: choix.symbole, ...style }]);
           } else if (outil === "texte") {
             saisieEnCours.current = position;
-            setSaisie({ ...position, ratio: ratio() });
+            // Le champ se place dans le calque, avant le zoom de la visionneuse : la largeur de mise en page, pas celle à l'écran.
+            const c = canevas.current;
+            setSaisie({ ...position, ratio: c && c.width > 0 ? c.offsetWidth / c.width : 1 });
           }
         }}
       />
