@@ -368,8 +368,8 @@ export function CapturesView({ onReglages }: { onReglages: () => void }) {
                     <button
                       type="button"
                       data-testid="carte-modifier"
-                      title="Modifier l'annotation"
-                      aria-label={`Modifier l'annotation de « ${titre} »`}
+                      title="Modifier"
+                      aria-label={`Modifier « ${titre} »`}
                       className={pastille}
                       onClick={() => setOuverte({ capture, edition: true })}
                     >
@@ -474,7 +474,11 @@ function Fiche({ initiale, editionInitiale = false, onFermer }: { initiale: Capt
   );
 
   return (
-    <DialogContent data-testid="capture-fiche" className="flex max-h-[92vh] max-w-5xl flex-col gap-3 sm:max-w-5xl">
+    // La fiche prend toute la fenêtre : la capture s'y voit et s'y annote en grand.
+    <DialogContent
+      data-testid="capture-fiche"
+      className="top-2 left-2 flex h-[calc(100dvh-1rem)] w-[calc(100vw-1rem)] max-w-none translate-x-0 translate-y-0 flex-col gap-3 sm:max-w-none"
+    >
       <DialogHeader>
         <DialogTitle className="pr-8 text-[14px]">
           <input
@@ -520,13 +524,13 @@ function Fiche({ initiale, editionInitiale = false, onFermer }: { initiale: Capt
             if (modifiee) {
               setCapture(modifiee);
               rafraichir();
-              dire("Annotation enregistrée");
+              dire("Modifications enregistrées");
             }
           }}
         />
       ) : (
         <>
-          <div className="flex min-h-0 justify-center overflow-auto rounded-lg border border-outline bg-surface-low">
+          <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-lg border border-outline bg-surface-low">
             {video ? (
               <video
                 src={adresse(capture.origine, capture.modifieLe)}
@@ -534,14 +538,14 @@ function Fiche({ initiale, editionInitiale = false, onFermer }: { initiale: Capt
                 controls
                 preload="metadata"
                 data-testid="capture-video"
-                className="max-h-[58vh] max-w-full"
+                className="max-h-full max-w-full"
               />
             ) : (
               <img
                 src={adresse(capture.rendu, capture.modifieLe)}
                 alt={`Capture de ${capture.fenetre || "l'écran"}`}
                 data-testid="capture-image"
-                className="max-h-[58vh] max-w-full object-contain"
+                className="max-h-full max-w-full object-contain"
               />
             )}
           </div>
@@ -560,7 +564,14 @@ function Fiche({ initiale, editionInitiale = false, onFermer }: { initiale: Capt
             className="min-h-16 text-[12px]"
           />
           <div className="flex flex-wrap items-center gap-2">
+            {!video && (
+              <Button data-testid="capture-modifier" onClick={() => setEdition(true)}>
+                <Icon name="draw" size={16} />
+                Modifier
+              </Button>
+            )}
             <Button
+              variant={video ? "default" : "outline"}
               size="sm"
               data-testid="capture-copier"
               title={video ? "Copier le fichier : Ctrl+V le dépose dans une messagerie ou un dossier" : undefined}
@@ -611,12 +622,6 @@ function Fiche({ initiale, editionInitiale = false, onFermer }: { initiale: Capt
               <Icon name="folder_open" size={14} />
               Ouvrir le dossier
             </Button>
-            {!video && (
-              <Button variant="outline" size="sm" data-testid="capture-modifier" onClick={() => setEdition(true)}>
-                <Icon name="draw" size={14} />
-                Modifier l'annotation
-              </Button>
-            )}
             <span className="text-[11px] text-primary" data-testid="capture-retour" aria-live="polite">
               {retour}
             </span>
@@ -750,14 +755,18 @@ function Reedition({ capture, onFini }: { capture: Capture; onFini: (modifiee: C
 
   const ratio = taille.largeur / taille.hauteur;
   return (
-    <div className="flex min-h-0 flex-col items-center gap-3" data-testid="capture-reedition">
-      <div className="flex min-h-0 w-full justify-center overflow-auto rounded-lg border border-outline bg-surface-low">
+    <div className="flex min-h-0 flex-1 flex-col items-center gap-3" data-testid="capture-reedition">
+      {/* Un conteneur de taille : l'image le remplit (cqw, cqh) sans dépasser sa taille réelle. */}
+      <div
+        className="flex min-h-0 w-full flex-1 items-center justify-center overflow-hidden rounded-lg border border-outline bg-surface-low"
+        style={{ containerType: "size" }}
+      >
         {image && (
           <div
             className="relative"
             style={{
               aspectRatio: `${taille.largeur} / ${taille.hauteur}`,
-              width: `min(100%, calc(58vh * ${ratio}), ${taille.largeur / echelle}px)`,
+              width: `min(100cqw, calc(100cqh * ${ratio}), ${taille.largeur / echelle}px)`,
             }}
           >
             <Annotation

@@ -147,8 +147,8 @@ function Carte({ capture, dessus }: { capture: Capture; dessus: boolean }) {
           <button
             type="button"
             data-testid="vignette-modifier"
-            title="Modifier l'annotation"
-            aria-label="Modifier l'annotation"
+            title="Modifier"
+            aria-label="Modifier"
             onPointerDown={bouton}
             onClick={() => void principaleModifier(capture.id).catch((e) => setErreur(errorText(e)))}
             className={outil}
