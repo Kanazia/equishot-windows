@@ -2,14 +2,17 @@
  * Une épingle (ADR-011) : une capture posée sur l'écran, toujours devant. Tirer
  * déplace, double-clic ou Échap ferme, molette pour la taille, Ctrl + molette
  * pour l'opacité, clic du milieu remet les deux à 100 %, Ctrl + C copie, clic
- * droit ouvre le menu. Rust tient la fenêtre ; la page tient l'opacité.
+ * droit ouvre le menu, la croix du survol ferme. Rust tient la fenêtre ; la page
+ * tient l'opacité.
  */
 import { useEffect, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import "@fontsource/inter/500.css";
+import "material-symbols/outlined.css";
 
+import { Icon } from "@/components/Icon";
 import { adresse, epingleCopier, epingleFermer, epingleInfos, epingleMenu, epingleTaille, errorText, surOrigineEpingle } from "@/lib/captures-api";
 import "@/index.css";
 
@@ -111,7 +114,7 @@ function Epingle() {
   return (
     <div
       data-testid="epingle"
-      className="fixed inset-0 cursor-move overflow-hidden select-none"
+      className="group fixed inset-0 cursor-move overflow-hidden select-none"
       onPointerDown={(e) => {
         if (e.button !== 0) return;
         depart.current = { x: e.screenX, y: e.screenY };
@@ -145,10 +148,24 @@ function Epingle() {
       )}
       {/* Liseré par-dessus le bord de l'image : une ombre portée rognerait les coins ou déborderait (ADR-011). */}
       <div className="pointer-events-none absolute inset-0 ring-1 ring-primary/60 ring-inset" />
+      {/* Ferme l'épingle seulement : la capture reste dans la galerie. */}
+      <button
+        type="button"
+        data-testid="epingle-fermer"
+        title="Fermer l'épingle"
+        aria-label="Fermer l'épingle"
+        onPointerDown={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
+        onDoubleClick={(e) => e.stopPropagation()}
+        onClick={() => void epingleFermer()}
+        className="absolute top-1.5 right-1.5 grid size-6 cursor-pointer place-items-center rounded-full bg-surface/90 text-on-surface opacity-0 shadow-sm transition-opacity duration-150 group-hover:opacity-100 hover:bg-surface-high focus-visible:opacity-100"
+      >
+        <Icon name="close" size={15} />
+      </button>
       {indication && (
         <span
           data-testid="epingle-indication"
-          className="pointer-events-none absolute top-1 right-1 rounded bg-surface/90 px-1.5 py-0.5 text-[11px] text-on-surface tabular-nums"
+          className="pointer-events-none absolute top-1 left-1 rounded bg-surface/90 px-1.5 py-0.5 text-[11px] text-on-surface tabular-nums"
         >
           {indication}
         </span>
