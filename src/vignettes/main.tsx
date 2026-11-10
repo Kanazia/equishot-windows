@@ -18,6 +18,7 @@ import {
   capturesMenu,
   duree,
   capturesSupprimer,
+  epingleOuvrir,
   errorText,
   principaleModifier,
   principaleOuvrir,
@@ -154,6 +155,19 @@ function Carte({ capture, dessus }: { capture: Capture; dessus: boolean }) {
             className={outil}
           >
             <Icon name="draw" size={15} />
+          </button>
+          )}
+          {capture.dureeMs === null && (
+          <button
+            type="button"
+            data-testid="vignette-epingler"
+            title="Épingler"
+            aria-label="Épingler"
+            onPointerDown={bouton}
+            onClick={() => void epingleOuvrir(capture.id).catch((e) => setErreur(errorText(e)))}
+            className={outil}
+          >
+            <Icon name="push_pin" size={15} />
           </button>
           )}
           <button
